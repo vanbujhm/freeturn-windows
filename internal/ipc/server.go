@@ -14,6 +14,13 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
 
+const (
+	// closeRetry - как часто Close повторяет закрытие приёмника.
+	closeRetry = 50 * time.Millisecond
+	// closeLimit - сколько Close ждёт конца приёма, дальше сдаётся.
+	closeLimit = 3 * time.Second
+)
+
 // Handler - то, чем служба отвечает на команды окна. Вызовы одного клиента идут по одному,
 // в его потоке. Connect возвращается быстро, Disconnect может ждать секунды: события этого
 // клиента идут своим потоком записи и не ждут.
@@ -114,7 +121,8 @@ func (s *Server) Broadcast(ev Event) {
 	}
 }
 
-// Close закрывает канал и всех клиентов. Обработчик, который уже выполняется, не ждёт.
+// Close закрывает канал и всех клиентов. Обработчик, который уже выполняется, не ждёт, время
+// ограничено closeLimit.
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
@@ -124,12 +132,32 @@ func (s *Server) Close() {
 			clients = append(clients, c)
 		}
 		s.mu.Unlock()
-		s.ln.Close()
+		s.closeListener()
 		for _, c := range clients {
 			c.close()
 		}
-		<-s.acceptDone
 	})
+}
+
+// closeListener закрывает приёмник и ждёт конца цикла приёма не дольше closeLimit. Один вызов
+// ln.Close не гарантирует закрытия: если клиент отключился в тот же момент, namedpipe получает
+// ERROR_NO_DATA, забывает сигнал и снова ждёт клиента, а ln.Close ждёт вечно. Повторный вызов
+// доставляет сигнал заново. Зависшие вызовы кончаются вместе с приёмником.
+func (s *Server) closeListener() {
+	retry := time.NewTicker(closeRetry)
+	defer retry.Stop()
+	limit := time.NewTimer(closeLimit)
+	defer limit.Stop()
+	for {
+		go s.ln.Close()
+		select {
+		case <-s.acceptDone:
+			return
+		case <-limit.C:
+			return
+		case <-retry.C:
+		}
+	}
 }
 
 func (s *Server) remove(c *srvClient) {

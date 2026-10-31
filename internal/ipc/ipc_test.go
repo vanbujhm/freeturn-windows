@@ -504,6 +504,69 @@ func TestOwnerAccepted(t *testing.T) {
 	}
 }
 
+const (
+	closeRaceRounds  = 300
+	closeRaceClients = 6
+)
+
+// Клиент, которого отверг Dial, подключается и сразу уходит. Если Close совпал с этим моментом,
+// namedpipe теряет сигнал закрытия (ERROR_NO_DATA) и снова ждёт клиента. Close обязан его
+// повторить: служба зовёт Close на остановке. startServer здесь не годится: его Cleanup
+// завис бы вместе с Close и не дал бы тесту сообщить об ошибке.
+func TestCloseWhileClientsLeave(t *testing.T) {
+	system, err := ServiceOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerSID(t).Equals(system) {
+		t.Skip("тест запущен от SYSTEM")
+	}
+	sddl := testSDDL(t)
+	for round := range closeRaceRounds {
+		srv, err := Serve(pipeName(t), sddl, &stub{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := srv.ln.Addr().String()
+		stop := make(chan struct{})
+		var clients sync.WaitGroup
+		for range closeRaceClients {
+			clients.Go(func() {
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if c, err := Dial(path, 20*time.Millisecond, system, nil); err == nil {
+						c.Close()
+					}
+				}
+			})
+		}
+		time.Sleep(time.Duration(round%5) * 100 * time.Microsecond)
+
+		closed := make(chan struct{})
+		go func() {
+			srv.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(5 * time.Second):
+			close(stop)
+			t.Fatalf("раунд %d: Close завис", round)
+		}
+		close(stop)
+		clients.Wait()
+		select {
+		case <-srv.acceptDone:
+		default:
+			t.Fatalf("раунд %d: приём ещё идёт после Close", round)
+		}
+	}
+}
+
 func TestUnexpectedOwnerRefused(t *testing.T) {
 	_, path := startServer(t, &stub{})
 	system, err := ServiceOwner()
