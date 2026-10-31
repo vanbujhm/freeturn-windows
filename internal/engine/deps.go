@@ -42,6 +42,8 @@ type Network interface {
 	SetBypass(ph model.Physical, p []netip.Prefix) error
 	ClearBypass() error
 	OtherTunnel(exclude uint64) (string, bool)
+	// FakeIPTunnel: туннельный адаптер (не exclude) с DNS в 198.18.0.0/15 (fake-ip Mihomo).
+	FakeIPTunnel(exclude uint64) (string, bool)
 }
 
 // Firewall ставит и снимает kill switch. Движок не вызывает его методы одновременно, кроме

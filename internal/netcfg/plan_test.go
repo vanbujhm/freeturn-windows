@@ -204,6 +204,48 @@ func TestFindTunnel(t *testing.T) {
 	}
 }
 
+func TestFindFakeIP(t *testing.T) {
+	mk := func(luid uint64, ifType uint32, desc, name string, dns ...string) adapterInfo {
+		a := adapterInfo{luid: luid, ifType: ifType, desc: desc, name: name}
+		for _, d := range dns {
+			a.dns = append(a.dns, netip.MustParseAddr(d))
+		}
+		return a
+	}
+	mihomo := mk(2, ifTypePropVirtual, "Meta Tunnel", "Mihomo", "198.18.0.2")
+	t.Run("Wintun с fake-ip DNS найден", func(t *testing.T) {
+		wintun := mk(3, 6, "Wintun Userspace Tunnel", "Clash", "198.18.1.1")
+		if name, ok := findFakeIP([]adapterInfo{wintun}, 0); !ok || name != "Clash" {
+			t.Fatalf("got %q %v, ожидался Clash", name, ok)
+		}
+		if name, ok := findFakeIP([]adapterInfo{mihomo}, 0); !ok || name != "Mihomo" {
+			t.Fatalf("got %q %v, ожидался Mihomo", name, ok)
+		}
+	})
+	t.Run("обычный DNS не в счёт", func(t *testing.T) {
+		wg := mk(3, ifTypePropVirtual, "Wintun", "Other", "8.8.8.8", "198.20.0.1", "198.17.255.255")
+		if name, ok := findFakeIP([]adapterInfo{wg}, 0); ok {
+			t.Fatalf("найден %q", name)
+		}
+	})
+	t.Run("физический адаптер не в счёт", func(t *testing.T) {
+		eth := mk(1, 6, "Intel Ethernet", "Ethernet", "198.18.0.2")
+		if name, ok := findFakeIP([]adapterInfo{eth}, 0); ok {
+			t.Fatalf("физический принят за туннель: %q", name)
+		}
+	})
+	t.Run("исключённый LUID пропускается", func(t *testing.T) {
+		if name, ok := findFakeIP([]adapterInfo{mihomo}, 2); ok {
+			t.Fatalf("найден исключённый %q", name)
+		}
+	})
+	t.Run("пустой список", func(t *testing.T) {
+		if _, ok := findFakeIP(nil, 0); ok {
+			t.Fatal("найден в пустом списке")
+		}
+	})
+}
+
 func TestBypassFor(t *testing.T) {
 	ph := model.Physical{
 		LUID:     7,

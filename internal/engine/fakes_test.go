@@ -182,6 +182,7 @@ type fakeNet struct {
 	physical model.Physical
 	physErr  error
 	other    string
+	fakeIP   string // адаптер с DNS в 198.18.0.0/15
 
 	mu       sync.Mutex
 	finds    int // сколько раз вызван FindPhysical
@@ -248,6 +249,8 @@ func (f *fakeNet) SetBypass(ph model.Physical, p []netip.Prefix) error {
 func (f *fakeNet) ClearBypass() error { return f.log.hit("net.bypassClear") }
 
 func (f *fakeNet) OtherTunnel(uint64) (string, bool) { return f.other, f.other != "" }
+
+func (f *fakeNet) FakeIPTunnel(uint64) (string, bool) { return f.fakeIP, f.fakeIP != "" }
 
 func (f *fakeNet) bypassed() []netip.Prefix {
 	f.mu.Lock()

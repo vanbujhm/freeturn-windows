@@ -3,9 +3,11 @@
 package netcfg
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -37,11 +39,14 @@ type routeRow struct {
 }
 
 // isTunnelAdapter: адаптер виртуальный или туннельный, физической сетью быть не может.
-func (r routeRow) isTunnelAdapter() bool {
-	if r.IfType == ifTypePropVirtual || r.IfType == ifTypeTunnel {
+func (r routeRow) isTunnelAdapter() bool { return tunnelAdapter(r.IfType, r.Desc) }
+
+// tunnelAdapter: общее для маршрутов и адаптеров правило «виртуальный или туннельный».
+func tunnelAdapter(ifType uint32, desc string) bool {
+	if ifType == ifTypePropVirtual || ifType == ifTypeTunnel {
 		return true
 	}
-	d := strings.ToLower(r.Desc)
+	d := strings.ToLower(desc)
 	return strings.Contains(d, "wintun") || strings.Contains(d, "meta tunnel")
 }
 
@@ -92,6 +97,25 @@ type adapterInfo struct {
 	name, desc       string
 	metric4, metric6 uint32
 	dns              []netip.Addr
+}
+
+// fakeIPRange - подставные адреса режима fake-ip у Clash и Mihomo.
+var fakeIPRange = netip.MustParsePrefix("198.18.0.0/15")
+
+// findFakeIP ищет виртуальный или туннельный адаптер (не exclude) с DNS-сервером в
+// fakeIPRange. Физический адаптер с таким DNS не считается: подмены там нет.
+func findFakeIP(adapters []adapterInfo, exclude uint64) (string, bool) {
+	for _, a := range adapters {
+		if a.luid == exclude || !tunnelAdapter(a.ifType, a.desc) {
+			continue
+		}
+		for _, d := range a.dns {
+			if fakeIPRange.Contains(d) {
+				return a.name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // listAdapters возвращает работающие адаптеры по LUID.
@@ -242,4 +266,20 @@ func OtherTunnel(exclude uint64) (name string, found bool) {
 		rows = append(rows, r...)
 	}
 	return findTunnel(rows, exclude)
+}
+
+// FakeIPTunnel возвращает имя туннельного адаптера (кроме exclude), чей DNS отдаёт подставные
+// адреса 198.18.0.0/15. Ошибка чтения сети считается отсутствием такого адаптера.
+func FakeIPTunnel(exclude uint64) (name string, found bool) {
+	adapters, err := listAdapters()
+	if err != nil {
+		return "", false
+	}
+	list := make([]adapterInfo, 0, len(adapters))
+	for _, a := range adapters {
+		list = append(list, a)
+	}
+	// Порядок карты случаен, а имя в отказе должно быть одним и тем же.
+	slices.SortFunc(list, func(a, b adapterInfo) int { return cmp.Compare(a.luid, b.luid) })
+	return findFakeIP(list, exclude)
 }

@@ -511,6 +511,11 @@ func (e *Engine) startCore(s *session) error {
 	if err != nil {
 		return failed(model.ErrCore, err)
 	}
+	// DNS соседнего TUN отдаёт подставные адреса, туннель их отбросит: интернет пропадёт.
+	// Отказ до запуска ядра, сеть и блокировка остаются нетронутыми.
+	if name, found := e.d.Net.FakeIPTunnel(0); found {
+		return &failure{code: model.ErrFakeIPDNS, msg: name}
+	}
 	if name, found := e.d.Net.OtherTunnel(0); found {
 		e.warn(model.WarnOtherVPN, name)
 		e.logf(levelWarn, "маршрут по умолчанию держит другой VPN: "+name)
@@ -729,7 +734,7 @@ func (e *Engine) finish(s *session, err error) {
 // detailFor даёт текст ошибки для кодов без постоянного текста в окне.
 func (e *Engine) detailFor(f *failure) string {
 	switch f.code {
-	case model.ErrAdapter, model.ErrCore, model.ErrBadProfile:
+	case model.ErrAdapter, model.ErrCore, model.ErrBadProfile, model.ErrFakeIPDNS:
 		return e.masked(f.msg)
 	default:
 		return ""

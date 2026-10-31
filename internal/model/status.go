@@ -28,6 +28,7 @@ const (
 	ErrCore            ErrorCode = "core"
 	ErrBadProfile      ErrorCode = "bad_profile"
 	ErrServiceDown     ErrorCode = "service_down"
+	ErrFakeIPDNS       ErrorCode = "fake_ip_dns"
 )
 
 // WarningCode — код предупреждения.

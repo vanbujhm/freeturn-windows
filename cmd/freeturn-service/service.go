@@ -179,6 +179,8 @@ func (n sysNet) ClearBypass() error {
 
 func (sysNet) OtherTunnel(exclude uint64) (string, bool) { return netcfg.OtherTunnel(exclude) }
 
+func (sysNet) FakeIPTunnel(exclude uint64) (string, bool) { return netcfg.FakeIPTunnel(exclude) }
+
 // sysFirewall закрывает engine.Firewall функциями firewall.
 type sysFirewall struct{}
 

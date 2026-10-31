@@ -561,6 +561,41 @@ func TestOtherVPNWarns(t *testing.T) {
 	h.wantWarning(model.Warning{Code: model.WarnOtherVPN, Value: "AmneziaVPN"})
 }
 
+// DNS соседнего TUN отдаёт подставные адреса: подключение отказывает до запуска ядра и
+// ничего не трогает в сети.
+func TestFakeIPDNSRefuses(t *testing.T) {
+	h := newHarness(t)
+	h.net.fakeIP = "Mihomo"
+	h.connect(testRequest())
+	st := h.waitPhase(model.PhaseError)
+	if st.Code != model.ErrFakeIPDNS || st.Detail != "Mihomo" {
+		t.Errorf("Code = %q, Detail = %q", st.Code, st.Detail)
+	}
+	for _, call := range []string{"core.start", "tunnel.open", "fw.enable", "net.routes"} {
+		if h.log.has(call) {
+			t.Errorf("вызван %s", call)
+		}
+	}
+	h.wantLog()
+}
+
+// Отказ из-за fake-ip при подключении из Blocked оставляет блокировку.
+func TestFakeIPDNSKeepsBlocked(t *testing.T) {
+	h := newHarness(t)
+	if err := h.e.ArmBlock(model.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	h.net.fakeIP = "Mihomo"
+	h.connect(testRequest())
+	st := h.waitPhase(model.PhaseBlocked)
+	if st.Code != model.ErrFakeIPDNS || st.Detail != "Mihomo" {
+		t.Errorf("Code = %q, Detail = %q", st.Code, st.Detail)
+	}
+	if h.log.has("fw.disable") {
+		t.Error("блокировка снята")
+	}
+}
+
 func TestNoDNSWarns(t *testing.T) {
 	h := newHarness(t)
 	req := testRequest()
