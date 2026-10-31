@@ -94,25 +94,26 @@ func (c *commands) clearWanted() {
 	c.write()
 }
 
-// syncBypass записывает набор маршрутов обхода, если он изменился.
+// syncBypass записывает набор маршрутов обхода, если он изменился. Набор читается под stateMu,
+// как в update: прочитанный раньше мог бы лечь на диск поверх более нового.
 func (c *commands) syncBypass() {
-	routes := c.applied()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
+	routes := c.applied()
 	if !slices.Equal(c.state.Bypass, routes) {
 		c.state.Bypass = routes
 		c.write()
 	}
 }
 
-// update меняет состояние и записывает его вместе с текущим набором маршрутов. Набор читается
-// раньше stateMu: его замок держится на время системных вызовов и не должен держать clearWanted.
+// update меняет состояние и записывает его вместе с текущим набором маршрутов. Набор читается и
+// записывается под одним stateMu, иначе syncBypass успел бы записать более новый, а update
+// затёр бы его старым. Цена: clearWanted ждёт, пока applied вернёт набор.
 func (c *commands) update(change func(statefile.State) statefile.State) {
-	routes := c.applied()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.state = change(c.state)
-	c.state.Bypass = routes
+	c.state.Bypass = c.applied()
 	c.write()
 }
 

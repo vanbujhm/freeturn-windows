@@ -231,6 +231,26 @@ func TestSyncBypassKeepsWanted(t *testing.T) {
 	}
 }
 
+// Набор маршрутов читается под stateMu: прочитанный раньше мог бы лечь на диск поверх более
+// нового, записанного другим вызовом.
+func TestAppliedReadUnderStateLock(t *testing.T) {
+	tun, st := &fakeTunnel{}, &stateLog{routes: testBypass}
+	c := newCommands(tun, st, &logCatcher{})
+	c.applied = func() []netcfg.BypassRoute {
+		if c.stateMu.TryLock() {
+			c.stateMu.Unlock()
+			t.Error("набор маршрутов читается без stateMu")
+		}
+		return st.current()
+	}
+	if err := c.Connect(ksRequest); err != nil {
+		t.Fatal(err)
+	}
+	st.setRoutes(nil)
+	c.syncBypass()
+	c.Disconnect()
+}
+
 // Зависшее отключение не должно оставить признак: следующий запуск вернул бы блокировку.
 func TestClearWantedDuringHungDisconnect(t *testing.T) {
 	tun := &fakeTunnel{hang: make(chan struct{}), entered: make(chan struct{}, 1)}

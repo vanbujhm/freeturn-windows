@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"syscall"
 	"time"
@@ -22,13 +23,13 @@ const (
 	// recoveryResetSeconds - через сколько секунд без падений счётчик падений обнуляется.
 	recoveryResetSeconds = 24 * 60 * 60
 	startTimeout         = 30 * time.Second
-	stopTimeout          = 15 * time.Second
+	stopTimeout          = 35 * time.Second
 	stopPoll             = 250 * time.Millisecond
 )
 
 var (
 	// errStopTimeout: служба не остановилась за отведённое время.
-	errStopTimeout = errors.New("служба не остановилась за 15 секунд")
+	errStopTimeout = errors.New("служба не остановилась за 35 секунд")
 	// errStartFailed: служба завершилась при запуске, причину она пишет в журнал событий.
 	errStartFailed = errors.New("служба не запустилась, причина в журнале событий Windows")
 	// errStartTimeout: служба не сообщила о запуске за отведённое время.
@@ -66,13 +67,10 @@ func recoveryActions() []mgr.RecoveryAction {
 }
 
 // install регистрирует службу и запускает её. Если она уже есть, обновляет настройки. Каталог
-// закрывается здесь, с правами установщика: так он готов раньше первого запуска службы, и
-// пользователь не успевает его подбросить.
+// данных создаётся здесь, с правами установщика: так он готов раньше первого запуска службы.
 func install() error {
-	if _, note, err := prepareDataDir(); err != nil {
+	if _, err := prepareDataDir(); err != nil {
 		return err
-	} else if note != "" {
-		fmt.Println(note)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -187,14 +185,26 @@ func removeWintun(check, removeAdapter, removeDriver func() error) {
 	_ = removeDriver()
 }
 
-// removeData снимает маршруты и удаляет каталог. Сначала каталог проверяется, как при запуске:
-// список маршрутов из подброшенного файла выполнялся бы с правами администратора.
+// removeData снимает маршруты и удаляет каталог данных, потом папку FreeTurn, если она пуста.
 func removeData() error {
-	p, _, err := prepareDataDir()
+	base, err := programFilesDir()
 	if err != nil {
 		return err
 	}
-	return errors.Join(removeSavedRoutes(p.state, netcfg.RemoveRoutes), os.RemoveAll(p.root))
+	return removeDataIn(base, netcfg.RemoveRoutes)
+}
+
+// removeDataIn удаляет каталог данных в заданном Program Files. Папку FreeTurn Inno Setup
+// убирает сам вместе с установленными файлами, и порядок этих действий не задан: пустую папку
+// удаляем, чужие файлы в ней оставляем. Данным из Program Files верим: подбросить их там некому.
+func removeDataIn(programFiles string, removeRoutes func([]netcfg.BypassRoute) error) error {
+	p := dataPathsFor(programFiles)
+	err := errors.Join(removeSavedRoutes(p.state, removeRoutes), os.RemoveAll(p.root))
+	if rmErr := os.Remove(p.app); rmErr != nil &&
+		!errors.Is(rmErr, fs.ErrNotExist) && !errors.Is(rmErr, windows.ERROR_DIR_NOT_EMPTY) {
+		err = errors.Join(err, rmErr)
+	}
+	return err
 }
 
 // removeSavedRoutes снимает маршруты обхода из файла состояния. Они остаются, только если служба

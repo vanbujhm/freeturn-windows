@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -168,6 +169,61 @@ func TestRemoveSavedRoutesNoFile(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func noRoutes(t *testing.T) func([]netcfg.BypassRoute) error {
+	return func(rs []netcfg.BypassRoute) error {
+		if len(rs) != 0 {
+			t.Errorf("маршруты из ниоткуда: %v", rs)
+		}
+		return nil
+	}
+}
+
+// Установщик уже убрал свои файлы: остаётся только Data, и пустая папка FreeTurn уходит с ней.
+func TestRemoveDataRemovesEmptyApp(t *testing.T) {
+	base := t.TempDir()
+	p, err := prepareDataDirIn(base, testSDDL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.state, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDataIn(base, noRoutes(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(p.app); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("папка FreeTurn осталась: %v", err)
+	}
+}
+
+// Установщик ещё не убрал свои файлы: они остаются ему.
+func TestRemoveDataKeepsInstalledFiles(t *testing.T) {
+	base := t.TempDir()
+	p, err := prepareDataDirIn(base, testSDDL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(p.app, "freeturn-service.exe")
+	if err := os.WriteFile(exe, []byte("exe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDataIn(base, noRoutes(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(p.root); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Data осталась: %v", err)
+	}
+	if _, err := os.Stat(exe); err != nil {
+		t.Errorf("файл установщика тронут: %v", err)
+	}
+}
+
+func TestRemoveDataNothingInstalled(t *testing.T) {
+	if err := removeDataIn(t.TempDir(), noRoutes(t)); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -48,7 +48,7 @@ type runOptions struct {
 // первого чтения каталога, второй экземпляр отсекается до RemoveStale, а блокировка возвращается
 // раньше, чем канал начнёт принимать команды. Остановка целиком укладывается в stopDeadline.
 func run(ctx context.Context, o runOptions) error {
-	paths, note, err := prepareDataDir()
+	paths, err := prepareDataDir()
 	if err != nil {
 		return err
 	}
@@ -64,9 +64,6 @@ func run(ctx context.Context, o runOptions) error {
 	})
 	defer logs.close()
 	logs.write(mobile.LevelInfo, "служба запускается")
-	if note != "" {
-		logs.write(mobile.LevelWarn, note)
-	}
 	if o.debug {
 		logs.write(mobile.LevelWarn, "подробные строки ядра идут только в консоль: в них куки и токены капчи, не передавайте их")
 	}
