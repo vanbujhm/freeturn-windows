@@ -811,7 +811,7 @@ TestRingKeepsLast // кольцо на 2000 строк отдаёт послед
 
 Сборка зависимостей `engine.Deps` из настоящих пакетов. Функция `run(ctx)` общая для службы и `console`:
 
-1. Создать `%ProgramData%\FreeTurn` и выставить права: SYSTEM и администраторы полный доступ, наследование отключено (`windows.SetNamedSecurityInfo`).
+1. Создать `%ProgramFiles%\FreeTurn\Data` и выставить права: SYSTEM и администраторы полный доступ, наследование отключено (`windows.SetNamedSecurityInfo`).
 2. Вызвать `tunnel.RemoveStale`.
 3. `statefile.Load`, `statefile.Decide`: при `ActionRearm` вызвать `engine.ArmBlock`, при `ActionAwaitProfile` вызвать `engine.AwaitProfile`, при `ActionClear` сохранить пустое состояние.
 4. `ipc.Serve`, подписка `engine.OnChange` на `Broadcast`, `netcfg.WatchDefaultRoute` на `engine.NetworkChanged`, таймер 30 с на `Tick`, таймер 1 с на `RefreshRates`.
@@ -819,11 +819,11 @@ TestRingKeepsLast // кольцо на 2000 строк отдаёт послед
 
 `svc.Handler` принимает `Stop`, `Shutdown`, `PowerEvent`. `PBT_APMRESUMEAUTOMATIC` (`0x12`) вызывает `engine.Woke`. `Stop` и `Shutdown` выполняют `Disconnect` и сбрасывают `Wanted`.
 
-`corehost.New` получает каталог `%ProgramData%\FreeTurn\core`. `mobile.Protector` у `Host` это `protect.Protector`, `Sink` направляет события в `engine.OnCoreState` и `engine.OnCaptcha`. Интерфейсы `engine.Network`, `engine.Tunnels`, `engine.Firewall` закрываются тонкими обёртками над функциями `netcfg`, `tunnel`, `firewall` в `service.go`.
+`corehost.New` получает каталог `%ProgramFiles%\FreeTurn\Data\core`. `mobile.Protector` у `Host` это `protect.Protector`, `Sink` направляет события в `engine.OnCoreState` и `engine.OnCaptcha`. Интерфейсы `engine.Network`, `engine.Tunnels`, `engine.Firewall` закрываются тонкими обёртками над функциями `netcfg`, `tunnel`, `firewall` в `service.go`.
 
 - [ ] **Step 5: Реализовать `install.go`**
 
-`install`: `mgr.CreateService("FreeTurnService", exe, mgr.Config{StartType: StartAutomatic, DisplayName: "FreeTurn", Description: "Туннель FreeTurn"})`, `SetRecoveryActions` с перезапуском через 1, 5, 30 секунд, запуск. Если служба уже есть, обновить конфигурацию. `uninstall`: `Disconnect` через остановку службы, ожидание до 15 с, `DeleteService`, `wintun.Uninstall()` с игнорированием ошибки занятости, удаление `%ProgramData%\FreeTurn`.
+`install`: `mgr.CreateService("FreeTurnService", exe, mgr.Config{StartType: StartAutomatic, DisplayName: "FreeTurn", Description: "Туннель FreeTurn"})`, `SetRecoveryActions` с перезапуском через 1, 5, 30 секунд, запуск. Если служба уже есть, обновить конфигурацию. `uninstall`: `Disconnect` через остановку службы, ожидание до 15 с, `DeleteService`, `wintun.Uninstall()` с игнорированием ошибки занятости, удаление `%ProgramFiles%\FreeTurn\Data`.
 
 - [ ] **Step 6: Реализовать `cmd/freeturnctl/main.go`**
 
@@ -1225,7 +1225,7 @@ IP, подсеть и домен идут напрямую: `tracert -d`, и н�
 
 - [ ] **Step 9: Удаление**
 
-Ожидается: `sc query FreeTurnService` даёт `1060`, адаптера нет, `%ProgramData%\FreeTurn` нет, схема `freeturn://` снята, профили удалены после подтверждения. Другой VPN-клиент подключается как раньше.
+Ожидается: `sc query FreeTurnService` даёт `1060`, адаптера нет, `%ProgramFiles%\FreeTurn\Data` нет, схема `freeturn://` снята, профили удалены после подтверждения. Другой VPN-клиент подключается как раньше.
 
 - [ ] **Step 10: Записать результаты в `docs/acceptance-2026.md`**
 

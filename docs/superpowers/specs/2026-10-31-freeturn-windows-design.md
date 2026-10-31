@@ -182,7 +182,7 @@ replace github.com/samosvalishe/free-turn-proxy =>
 
 ### Падение службы
 
-Windows перезапускает службу. `%ProgramData%\FreeTurn\state.json` хранит признак «туннель
+Windows перезапускает службу. `%ProgramFiles%\FreeTurn\Data\state.json` хранит признак «туннель
 нужен», настройку kill switch, время загрузки системы и список применённых маршрутов
 исключений, без секретов. Маршруты исключений лежат на физическом адаптере и после падения
 сами не исчезают, поэтому служба удаляет их при старте.
@@ -309,9 +309,9 @@ type Rule struct {
 | --- | --- | --- |
 | Профили с ключами | `%LOCALAPPDATA%\FreeTurn\profiles.dat` | DPAPI под пользователя |
 | Настройки, исключения | `%LOCALAPPDATA%\FreeTurn\settings.json` | без секретов |
-| Признак туннеля | `%ProgramData%\FreeTurn\state.json` | без секретов |
-| Состояние ядра | `%ProgramData%\FreeTurn\core\` | права SYSTEM и администраторов |
-| Логи службы | `%ProgramData%\FreeTurn\logs\`, 3 файла по 1 МБ | секреты замаскированы |
+| Признак туннеля | `%ProgramFiles%\FreeTurn\Data\state.json` | без секретов |
+| Состояние ядра | `%ProgramFiles%\FreeTurn\Data\core\` | права SYSTEM и администраторов |
+| Логи службы | `%ProgramFiles%\FreeTurn\Data\logs\`, 3 файла по 1 МБ | секреты замаскированы |
 
 Профиль попадает в службу на время подключения и хранится только в памяти.
 
@@ -346,7 +346,7 @@ type Rule struct {
 
 1. Отключить туннель.
 2. Остановить и удалить службу.
-3. Убрать адаптер, автозапуск, схему `freeturn://`, `%ProgramData%\FreeTurn`.
+3. Убрать адаптер, автозапуск, схему `freeturn://`, `%ProgramFiles%\FreeTurn\Data`.
 4. Спросить про профили с ключами, по умолчанию удалить.
 5. Вызвать `WintunDeleteDriver`. Он удаляет драйвер только если тот никем не занят, поэтому
    Amnezia не пострадает. Принудительно драйвер не удаляется.
