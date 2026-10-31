@@ -350,6 +350,65 @@ func TestNetworkChangedOutsideSession(t *testing.T) {
 	})
 }
 
+// NetworkChanged на шагах 3-5 ничего не делает, поэтому шаг 6 сверяет сеть сам.
+func TestNetworkMovedDuringConnect(t *testing.T) {
+	h := newHarness(t)
+	release := h.log.hold("net.routes")
+	defer release()
+	h.connect(subnetRequest())
+	h.waitCall("net.routes")
+
+	ph := otherPhysical()
+	h.net.setPhysical(ph, nil)
+	h.e.NetworkChanged()
+	h.wantNotCalled("core.reconnect")
+	release()
+	h.waitPhase(model.PhaseConnected)
+
+	if got := h.net.bypassPhysical(); got.LUID != ph.LUID {
+		t.Errorf("обход ушёл на %+v", got)
+	}
+	if h.prot.i4 != ph.Index4 {
+		t.Errorf("protect: %d", h.prot.i4)
+	}
+	if got := h.log.count("core.reconnect"); got != 1 {
+		t.Errorf("core.reconnect %d раз", got)
+	}
+}
+
+func TestNetworkLostDuringConnect(t *testing.T) {
+	h := newHarness(t)
+	release := h.log.hold("net.routes")
+	defer release()
+	h.connect(subnetRequest())
+	h.waitCall("net.routes")
+
+	h.net.setPhysical(model.Physical{}, netcfg.ErrNoNetwork)
+	release()
+	h.waitPhase(model.PhaseReconnecting)
+
+	h.wantNotCalled("core.reconnect", "net.clear", "net.bypassClear")
+	for _, st := range h.changeLog() {
+		if st.Phase == model.PhaseConnected {
+			t.Errorf("окно увидело Connected без сети: %+v", st)
+		}
+	}
+}
+
+// Сеть на месте: шаг 6 ничего не трогает, журнал подключения остаётся прежним.
+func TestConnectSameNetworkLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+
+	h.wantNotCalled("core.reconnect")
+	if got := h.log.count("protect.set"); got != 1 {
+		t.Errorf("protect.set %d раз", got)
+	}
+	if got := h.net.findCount(); got != 2 {
+		t.Errorf("FindPhysical %d раз", got)
+	}
+}
+
 // Откат не начинается, пока монитор меняет маршруты, а после отмены монитор останавливается.
 // Иначе опоздавший SetBypass оставил бы маршруты после ClearBypass.
 func TestRollbackWaitsForNetworkMove(t *testing.T) {
@@ -579,20 +638,27 @@ func TestStaleHandshakeReconnects(t *testing.T) {
 	now := time.Now()
 	h.dev.setHandshake(now.Add(-staleHandshake-time.Second), nil)
 
+	// Первый такт только запоминает счётчик: сравнивать ещё не с чем.
 	h.e.Tick(now)
+	h.wantNotCalled("core.reconnect")
+
+	h.dev.send(1500)
+	h.e.Tick(now.Add(30 * time.Second))
 	if got := h.log.count("core.reconnect"); got != 1 {
 		t.Fatalf("core.reconnect %d раз", got)
 	}
 	h.wantWarning(model.Warning{Code: model.WarnStaleHandshake})
 	h.wantLogged("рукопожатия нет")
 
-	h.e.Tick(now.Add(30 * time.Second))
+	h.dev.send(1500)
+	h.e.Tick(now.Add(time.Minute))
 	if got := h.log.count("core.reconnect"); got != 1 {
 		t.Errorf("повтор в ту же минуту: %d", got)
 	}
 
 	// Рукопожатия так и нет: через срок пробуем снова, но предупреждение одно.
-	h.e.Tick(now.Add(staleHandshake))
+	h.dev.send(1500)
+	h.e.Tick(now.Add(30*time.Second + staleHandshake))
 	if got := h.log.count("core.reconnect"); got != 2 {
 		t.Errorf("повтор после срока: %d", got)
 	}
@@ -607,15 +673,95 @@ func TestStaleHandshakeReconnects(t *testing.T) {
 	}
 }
 
+// На простаивающем туннеле WireGuard рукопожатий не делает, это не сбой.
+func TestIdleTunnelNotStale(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	now := time.Now()
+	h.dev.send(1500) // трафик был раньше, счётчик не нулевой
+	h.dev.setHandshake(now.Add(-10*time.Minute), nil)
+
+	for i := range 4 {
+		h.e.Tick(now.Add(time.Duration(i) * 30 * time.Second))
+	}
+
+	h.wantNotCalled("core.reconnect")
+	if w := h.e.Status().Warnings; len(w) != 0 {
+		t.Errorf("предупреждения %+v", w)
+	}
+}
+
+// Счётчик запоминается и во время паузы после Reconnect: рост, случившийся в паузу, не
+// должен сработать на первом такте после неё, когда туннель уже простаивает.
+func TestStaleCheckComparesAdjacentTicks(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	now := time.Now()
+	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	h.e.Tick(now)
+	h.dev.send(1500)
+	h.e.Tick(now.Add(30 * time.Second))
+	h.dev.send(1500)
+	h.e.Tick(now.Add(time.Minute))
+	if got := h.log.count("core.reconnect"); got != 1 {
+		t.Fatalf("core.reconnect %d раз", got)
+	}
+
+	h.e.Tick(now.Add(time.Hour))
+
+	if got := h.log.count("core.reconnect"); got != 1 {
+		t.Errorf("сработал старый рост: %d", got)
+	}
+}
+
+// Пока ядро переподключалось, туннель слал повторы рукопожатия. После восстановления ему
+// нужен такт, чтобы договориться, иначе Reconnect сбил бы только что поднятые потоки.
+func TestStaleCheckRestartsAfterReconnecting(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	now := time.Now()
+	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	h.e.Tick(now)
+
+	h.e.OnCoreState("connecting", 0, 12, "")
+	h.e.Tick(now.Add(10 * time.Second))
+	h.dev.send(1500)
+	h.e.OnCoreState("connected", 3, 12, "")
+	h.e.Tick(now.Add(30 * time.Second))
+	h.wantNotCalled("core.reconnect")
+
+	h.dev.send(1500)
+	h.e.Tick(now.Add(time.Minute))
+	if got := h.log.count("core.reconnect"); got != 1 {
+		t.Errorf("core.reconnect %d раз", got)
+	}
+}
+
+// Нулевое время значит «неизвестно», а не «давно»: шаг 4 уже дождался рукопожатия.
+func TestUnknownHandshakeLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	now := time.Now()
+	h.dev.setHandshake(time.Time{}, nil)
+	h.e.Tick(now)
+
+	h.dev.send(1500)
+	h.e.Tick(now.Add(30 * time.Second))
+
+	h.wantNotCalled("core.reconnect")
+}
+
 func TestFreshHandshakeLeftAlone(t *testing.T) {
 	h := newHarness(t)
 	from := h.up(subnetRequest())
 	now := time.Now()
 	h.dev.setHandshake(now.Add(-staleHandshake), nil)
+	h.e.Tick(now.Add(-time.Second))
 
+	h.dev.send(1500)
 	h.e.Tick(now)
 
-	h.wantSince(from, "tunnel.stats")
+	h.wantSince(from, "tunnel.stats", "tunnel.stats")
 	if len(h.e.Status().Warnings) != 0 {
 		t.Errorf("предупреждения %+v", h.e.Status().Warnings)
 	}
@@ -632,18 +778,28 @@ func TestHandshakeStatsFail(t *testing.T) {
 	h.wantLogged(errBoom.Error())
 }
 
+// staleSetup готовит туннель, где не хватает только роста счётчика: рукопожатие старое,
+// а первый такт уже запомнил отправленное. Возвращает длину журнала после него.
+func (h *harness) staleSetup(now time.Time) int {
+	h.t.Helper()
+	h.up(subnetRequest())
+	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	h.e.Tick(now.Add(-30 * time.Second))
+	return len(h.log.snapshot())
+}
+
 // Проверка нужна только там, где ядро считает себя подключённым.
 func TestStaleHandshakeOnlyWhenCoreConnected(t *testing.T) {
 	cases := map[string]string{"подключается": "connecting", "капча": "captcha"}
 	for name, state := range cases {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
-			from := h.up(subnetRequest())
 			now := time.Now()
-			h.dev.setHandshake(now.Add(-time.Hour), nil)
+			from := h.staleSetup(now)
 
 			// Автоматическая капча идёт при живых потоках, фаза остаётся Connected.
 			h.e.OnCoreState(state, 1, 12, "")
+			h.dev.send(1500)
 			h.e.Tick(now)
 
 			h.wantSince(from)
@@ -653,12 +809,12 @@ func TestStaleHandshakeOnlyWhenCoreConnected(t *testing.T) {
 
 func TestStaleHandshakeWaitsWhileReconnecting(t *testing.T) {
 	h := newHarness(t)
-	from := h.up(subnetRequest())
 	now := time.Now()
-	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	from := h.staleSetup(now)
 	h.e.OnCoreState("connecting", 0, 12, "")
 	h.waitPhase(model.PhaseReconnecting)
 
+	h.dev.send(1500)
 	h.e.Tick(now)
 
 	h.wantSince(from)
@@ -667,12 +823,12 @@ func TestStaleHandshakeWaitsWhileReconnecting(t *testing.T) {
 // Без сети ядро ещё считает себя подключённым, но переподключаться ему не через что.
 func TestStaleHandshakeSkippedWithoutNetwork(t *testing.T) {
 	h := newHarness(t)
-	from := h.up(subnetRequest())
 	now := time.Now()
-	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	from := h.staleSetup(now)
 	h.net.setPhysical(model.Physical{}, netcfg.ErrNoNetwork)
 	h.e.NetworkChanged()
 
+	h.dev.send(1500)
 	h.e.Tick(now)
 
 	h.wantSince(from)
@@ -682,11 +838,11 @@ func TestStaleHandshakeSkippedWithoutNetwork(t *testing.T) {
 // пересоздал бы живой канал ценой похода за реквизитами и капчи.
 func TestWakeDefersStaleCheck(t *testing.T) {
 	h := newHarness(t)
-	h.up(subnetRequest())
 	now := time.Now()
-	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	h.staleSetup(now)
 
 	h.e.Woke()
+	h.dev.send(1500)
 	h.e.Tick(now.Add(30 * time.Second))
 
 	h.wantNotCalled("core.reconnect")
@@ -694,12 +850,12 @@ func TestWakeDefersStaleCheck(t *testing.T) {
 
 func TestNetworkChangeDefersStaleCheck(t *testing.T) {
 	h := newHarness(t)
-	h.up(subnetRequest())
 	now := time.Now()
-	h.dev.setHandshake(now.Add(-time.Hour), nil)
+	h.staleSetup(now)
 
 	h.net.setPhysical(otherPhysical(), nil)
 	h.e.NetworkChanged()
+	h.dev.send(1500)
 	h.e.Tick(now.Add(30 * time.Second))
 
 	if got := h.log.count("core.reconnect"); got != 1 {

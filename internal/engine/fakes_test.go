@@ -156,6 +156,13 @@ func (f *fakeDevice) setHandshake(at time.Time, err error) {
 	f.stats.LastHandshake, f.statsErr = at, err
 }
 
+// send добавляет к счётчику отправленного, как пакеты в туннель.
+func (f *fakeDevice) send(n int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stats.TxBytes += n
+}
+
 func (f *fakeDevice) Close() { _ = f.log.hit("tunnel.close") }
 
 type fakeTunnels struct {

@@ -106,6 +106,8 @@ type session struct {
 	resolved    []netip.Addr
 	domainsAt   time.Time // когда домены разрешались в последний раз
 	nudgedAt    time.Time // когда монитор в последний раз будил ядро
+	txBytes     int64     // сколько устройство отправило к прошлому такту
+	txSeen      bool      // txBytes задан, есть с чем сравнивать
 }
 
 // push кладёт обратную операцию на стек отката.
@@ -417,6 +419,8 @@ func (e *Engine) run(s *session) {
 
 	err := e.establish(s)
 	if err == nil {
+		// На шагах 3-5 NetworkChanged ничего не делает, а сеть могла смениться.
+		e.followNetwork(s)
 		e.markConnected(s)
 		<-s.ctx.Done()
 		err = context.Cause(s.ctx)

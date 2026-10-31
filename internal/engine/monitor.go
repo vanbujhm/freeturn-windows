@@ -150,15 +150,22 @@ func (e *Engine) Tick(now time.Time) {
 		return
 	}
 	if e.reviveStale(s, now) {
-		e.logf(levelWarn, "ядро подключено, а рукопожатия нет дольше 3 минут, переподключаем")
+		e.logf(levelWarn, "пакеты уходят, а рукопожатия нет дольше 3 минут, переподключаем")
 		e.warnOnce(model.Warning{Code: model.WarnStaleHandshake})
 	}
 	e.refreshDomains(s, now)
 }
 
-// reviveStale переподключает ядро, если оно считает себя подключённым, а рукопожатие старое.
-// Сообщает, что переподключение было. Пока идёт переподключение или капча, ядро занято этим
-// само, а Reconnect сбил бы ему подбор реквизитов.
+// reviveStale переподключает ядро, если оно считает себя подключённым, пакеты уходят, а
+// рукопожатие старое. Сообщает, что переподключение было. Как directSnapshot в ядре: на
+// простаивающем туннеле WireGuard рукопожатий не делает, и старое само по себе не сбой.
+// TxBytes считает и keepalive, и повторы рукопожатия, поэтому мёртвый пир виден без трафика
+// пользователя.
+//
+// Счётчик сравнивается только с прошлым тактом, поэтому запоминается и во время паузы после
+// Reconnect. Пока идёт переподключение или капча, ядро занято этим само, а Reconnect сбил бы
+// ему подбор реквизитов. Первый такт после них только запоминает: туннелю нужно время, чтобы
+// договориться заново, а повторы рукопожатия за это время выглядят как трафик.
 func (e *Engine) reviveStale(s *session, now time.Time) bool {
 	s.netMu.Lock()
 	defer s.netMu.Unlock()
@@ -166,10 +173,12 @@ func (e *Engine) reviveStale(s *session, now time.Time) bool {
 		return false
 	}
 	e.mu.Lock()
-	wait := e.st.Phase != model.PhaseConnected || s.coreState != coreConnected ||
-		now.Sub(s.nudgedAt) < staleHandshake
+	live := e.st.Phase == model.PhaseConnected && s.coreState == coreConnected
+	if !live {
+		s.txSeen = false
+	}
 	e.mu.Unlock()
-	if wait {
+	if !live {
 		return false
 	}
 	stats, err := s.dev.Stats()
@@ -177,7 +186,13 @@ func (e *Engine) reviveStale(s *session, now time.Time) bool {
 		e.logf(levelWarn, "рукопожатие не прочитано: "+err.Error())
 		return false
 	}
-	if stats.LastHandshake.IsZero() || now.Sub(stats.LastHandshake) <= staleHandshake {
+	e.mu.Lock()
+	sending := s.txSeen && stats.TxBytes > s.txBytes
+	s.txBytes, s.txSeen = stats.TxBytes, true
+	quiet := now.Sub(s.nudgedAt) < staleHandshake
+	e.mu.Unlock()
+	old := !stats.LastHandshake.IsZero() && now.Sub(stats.LastHandshake) > staleHandshake
+	if !sending || !old || quiet {
 		return false
 	}
 	e.nudge(s, e.d.Core.Reconnect, now)
