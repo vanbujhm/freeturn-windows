@@ -9,7 +9,8 @@
 //   - ctl упорядочивает команды Connect, Disconnect, ArmBlock, AwaitProfile;
 //   - mu защищает статус и поля сессии, при вызовах зависимостей не держится;
 //   - notifyMu держит порядок OnChange, берётся раньше mu;
-//   - fwMu держится на время одного вызова брандмауэра.
+//   - fwMu держится на время одного вызова брандмауэра. Вызовы не пересекаются, исключение
+//     одно: зависшую установку Disconnect обходит через Disable, см. awaitRollback.
 package engine
 
 import (
@@ -20,11 +21,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
 	"github.com/vanbujhm/freeturn-windows/internal/firewall"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
+	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 	"github.com/vanbujhm/freeturn-windows/internal/secretmask"
 	"github.com/vanbujhm/freeturn-windows/internal/split"
 	"github.com/vanbujhm/freeturn-windows/internal/wgconf"
@@ -39,6 +42,7 @@ const (
 
 // Состояния ядра, которые приходят в OnCoreState.
 const (
+	coreIdle       = "idle"
 	coreConnecting = "connecting"
 	coreConnected  = "connected"
 	coreCaptcha    = "captcha"
@@ -170,8 +174,9 @@ type Engine struct {
 	sess *session
 	mask *secretmask.Masker
 
-	fwMu sync.Mutex
-	fwOn bool // блокировка стоит
+	fwMu   sync.Mutex
+	fwOn   bool        // блокировка стоит
+	fwBusy atomic.Bool // идёт Enable или Update, читается без fwMu
 }
 
 // New создаёт движок в состоянии Idle.
@@ -190,6 +195,9 @@ func New(d Deps) *Engine {
 	}
 	if d.HandshakeTimeout == 0 {
 		d.HandshakeTimeout = defaultHandshakeTimeout
+	}
+	if d.FirewallGrace == 0 {
+		d.FirewallGrace = defaultFirewallGrace
 	}
 	return &Engine{d: d, st: model.Status{Phase: model.PhaseIdle}}
 }
@@ -242,7 +250,7 @@ func (e *Engine) Disconnect() {
 	e.mu.Unlock()
 	if s != nil {
 		s.cancel(errDisconnected)
-		<-s.done
+		e.awaitRollback(s)
 	}
 	e.fwClear()
 	e.update(func(st *model.Status) bool {
@@ -250,6 +258,26 @@ func (e *Engine) Disconnect() {
 		return true
 	})
 	e.logf(levelInfo, "отключено")
+}
+
+// awaitRollback ждёт конца отката. Срок транзакции WFP ограничивает только её начало, поэтому
+// установка может висеть сколько угодно, а человек не должен оставаться без интернета. Если
+// за FirewallGrace откат не кончился и установка ещё идёт, Disable вызывается мимо fwMu:
+// firewall.Disable установку не ждёт, а опоздавшая установка закрывает свою сессию сама.
+// Поток всё равно дожидаемся: откат выполняется только в нём.
+func (e *Engine) awaitRollback(s *session) {
+	timer := time.NewTimer(e.d.FirewallGrace)
+	defer timer.Stop()
+	select {
+	case <-s.done:
+		return
+	case <-timer.C:
+	}
+	if e.fwBusy.Load() {
+		e.logf(levelWarn, "брандмауэр не отвечает, блокировка снята без ожидания")
+		e.d.FW.Disable()
+	}
+	<-s.done
 }
 
 // Status возвращает снимок состояния.
@@ -262,8 +290,12 @@ func (e *Engine) Status() model.Status {
 // OnCoreState принимает состояние ядра. Вызывается из потока ядра и не блокируется на шагах.
 func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 	var fatal *failure
-	if state == coreError {
+	switch state {
+	case coreError:
 		fatal = &failure{code: e.d.Classify(errMsg), msg: errMsg}
+	case coreIdle:
+		// Приём закрывается раньше core.Stop, значит это не наша остановка: ядро умерло.
+		fatal = &failure{code: model.ErrCore, msg: "ядро остановилось без команды"}
 	}
 	e.update(func(st *model.Status) bool {
 		s := e.sess
@@ -272,6 +304,10 @@ func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 		}
 		changed := st.Streams != streams || st.Total != total
 		st.Streams, st.Total = streams, total
+		if fatal != nil {
+			s.cancel(fatal)
+			return changed
+		}
 		switch state {
 		case coreConnected:
 			if !s.coreSeen {
@@ -287,8 +323,6 @@ func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 				st.Phase = model.PhaseReconnecting
 				changed = true
 			}
-		case coreError:
-			s.cancel(fatal)
 		}
 		return changed
 	})
@@ -321,6 +355,7 @@ func (e *Engine) OnCaptcha(url string, manual bool) {
 }
 
 // ArmBlock возвращает блокировку после падения службы: адаптера ещё нет, окно пришлёт профиль.
+// Ждать профиль движок начинает и тогда, когда блокировка не встала.
 func (e *Engine) ArmBlock(o model.Options) error {
 	e.ctl.Lock()
 	defer e.ctl.Unlock()
@@ -333,6 +368,12 @@ func (e *Engine) ArmBlock(o model.Options) error {
 	}
 	err := e.fwApply(firewall.Options{AllowLAN: o.AllowLAN, Bypass: split.Compile(o.Rules).Prefixes})
 	if err != nil {
+		// Окно всё равно должно прислать профиль, иначе туннель не вернётся.
+		e.logf(levelError, "блокировка не восстановлена: "+err.Error())
+		e.update(func(st *model.Status) bool {
+			st.AwaitingProfile = true
+			return true
+		})
 		return err
 	}
 	e.update(func(st *model.Status) bool {
@@ -383,9 +424,13 @@ func (e *Engine) establish(s *session) error {
 	if err := e.applyNetwork(s); err != nil {
 		return err
 	}
-	// Теперь блокировка зависит только от выбора в этом подключении.
+	// Последняя проверка отмены позади. Сбой раньше этой строки это сбой подключения, он не
+	// оставляет новой блокировки. Дальше блокировка зависит только от выбора в подключении.
 	s.holdBlock = s.req.Options.KillSwitch
-	return s.stopped()
+	if !s.holdBlock {
+		e.fwClear() // блокировка от прошлого подключения
+	}
+	return nil
 }
 
 // prepare - шаг 1: проверка профиля и правил. Служба не доверяет данным окна.
@@ -439,8 +484,11 @@ func (e *Engine) startCore(s *session) error {
 		return failed(model.ErrCore, err)
 	}
 	ph, err := e.d.Net.FindPhysical(0)
-	if err != nil {
+	if errors.Is(err, netcfg.ErrNoNetwork) {
 		return failed(model.ErrNoNetwork, err)
+	}
+	if err != nil {
+		return failed(model.ErrCore, err)
 	}
 	if name, found := e.d.Net.OtherTunnel(0); found {
 		e.warn(model.WarnOtherVPN, name)
@@ -524,47 +572,38 @@ func (e *Engine) openTunnel(s *session) error {
 	return nil
 }
 
-// applyNetwork - шаг 5. Сбой любой части, включая блокировку, это сбой подключения: без
-// блокировки туннель не поднимается. Обратные операции кладутся до вызова, потому что
-// SetBypass и ApplyTunnelRoutes при ошибке могут оставить часть маршрутов.
+// applyNetwork - шаг 5: домены, блокировка, обход, маршруты и DNS. Домены разрешаются раньше
+// блокировки: она сразу получает все адреса, а интернет не отрезан на время ожидания DNS.
+// Сбой любой части, включая блокировку, это сбой подключения: без блокировки туннель не
+// поднимается. Обратные операции кладутся до вызова, потому что SetBypass и
+// ApplyTunnelRoutes при ошибке могут оставить часть маршрутов.
 func (e *Engine) applyNetwork(s *session) error {
 	if err := s.stopped(); err != nil {
 		return err
 	}
-	killSwitch := s.req.Options.KillSwitch
-
 	s.push(func() {
 		if !s.keepBlock {
 			e.fwDisable()
 		}
 	})
-	if killSwitch {
-		e.mu.Lock()
-		opts := s.firewallOptions()
-		e.mu.Unlock()
-		if err := e.fwApply(opts); err != nil {
-			return failed(model.ErrAdapter, err)
-		}
-	}
-
-	added, err := e.resolveDomains(s)
-	if err != nil {
+	if err := e.resolveDomains(s); err != nil {
 		return err
-	}
-	if added {
-		e.mu.Lock()
-		opts := s.firewallOptions()
-		e.mu.Unlock()
-		if err := e.fwRefresh(opts); err != nil {
-			return failed(model.ErrAdapter, err)
-		}
 	}
 
 	e.mu.Lock()
-	bypass := s.bypass()
+	opts := s.firewallOptions()
 	e.mu.Unlock()
+	if s.req.Options.KillSwitch {
+		if err := e.fwApply(opts); err != nil {
+			return failed(model.ErrAdapter, err)
+		}
+		if err := s.stopped(); err != nil {
+			return err
+		}
+	}
+
 	s.push(func() { e.logFailure("снятие маршрутов обхода", e.d.Net.ClearBypass()) })
-	if err := e.d.Net.SetBypass(s.ph, bypass); err != nil {
+	if err := e.d.Net.SetBypass(s.ph, opts.Bypass); err != nil {
 		return failed(model.ErrAdapter, err)
 	}
 	if err := s.stopped(); err != nil {
@@ -575,42 +614,43 @@ func (e *Engine) applyNetwork(s *session) error {
 	if err := e.d.Net.ApplyTunnelRoutes(s.luid, s.cfg.AllowedPrefixes(), s.cfg.DNS); err != nil {
 		return failed(model.ErrAdapter, err)
 	}
+	return s.stopped()
+}
 
-	// Блокировка от прошлого подключения, а в этом kill switch выключен.
-	if !killSwitch {
-		e.fwClear()
+// resolveDomains разрешает домены одновременно, каждый отдельным вызовом: иначе один долгий
+// домен задержал бы подключение, а неразрешённый нельзя было бы назвать в предупреждении.
+// Предупреждения и адреса идут в порядке правил.
+func (e *Engine) resolveDomains(s *session) error {
+	domains, ph := s.rules.Domains, s.ph
+	answers := make([][]netip.Addr, len(domains))
+	var wg sync.WaitGroup
+	for i, domain := range domains {
+		wg.Go(func() { answers[i] = e.d.Resolver.Resolve(s.ctx, []string{domain}, ph) })
+	}
+	wg.Wait()
+	if err := s.stopped(); err != nil {
+		return err
+	}
+	for i, addrs := range answers {
+		if len(addrs) == 0 {
+			e.warn(model.WarnDomainUnresolved, domains[i])
+			e.logf(levelWarn, "домен не разрешился: "+domains[i])
+			continue
+		}
+		e.mu.Lock()
+		s.addResolved(addrs)
+		e.mu.Unlock()
 	}
 	return nil
 }
 
-// resolveDomains разрешает домены по одному, иначе неразрешённый домен не назвать
-// в предупреждении. Сообщает, появились ли новые адреса.
-func (e *Engine) resolveDomains(s *session) (added bool, err error) {
-	for _, domain := range s.rules.Domains {
-		addrs := e.d.Resolver.Resolve(s.ctx, []string{domain}, s.ph)
-		if err := s.stopped(); err != nil {
-			return false, err
-		}
-		if len(addrs) == 0 {
-			e.warn(model.WarnDomainUnresolved, domain)
-			e.logf(levelWarn, "домен не разрешился: "+domain)
-			continue
-		}
-		e.mu.Lock()
-		if s.addResolved(addrs) {
-			added = true
-		}
-		e.mu.Unlock()
-	}
-	return added, nil
-}
-
-// markConnected - шаг 6. Открытая капча остаётся на экране, закрытие вернёт в Connected.
+// markConnected - шаг 6. Открытая капча остаётся на экране. Потоки могли упасть, пока шли
+// шаги 4 и 5: тогда это уже Reconnecting.
 func (e *Engine) markConnected(s *session) {
 	e.update(func(st *model.Status) bool {
 		s.established = true
 		if st.Phase != model.PhaseCaptcha {
-			st.Phase = model.PhaseConnected
+			st.Phase = s.restingPhase(st.Streams)
 		}
 		return true
 	})
@@ -665,14 +705,21 @@ func (e *Engine) detailFor(f *failure) string {
 	}
 }
 
+// fwInstall выполняет Enable или Update и отмечает, что установка идёт. Вызывается под fwMu.
+func (e *Engine) fwInstall(call func(firewall.Options) error, o firewall.Options) error {
+	e.fwBusy.Store(true)
+	defer e.fwBusy.Store(false)
+	return call(o)
+}
+
 // fwApply ставит блокировку, а если она уже стоит, обновляет разрешения.
 func (e *Engine) fwApply(o firewall.Options) error {
 	e.fwMu.Lock()
 	defer e.fwMu.Unlock()
 	if e.fwOn {
-		return e.d.FW.Update(o)
+		return e.fwInstall(e.d.FW.Update, o)
 	}
-	if err := e.d.FW.Enable(o); err != nil {
+	if err := e.fwInstall(e.d.FW.Enable, o); err != nil {
 		return err
 	}
 	e.fwOn = true
@@ -687,7 +734,7 @@ func (e *Engine) fwRefresh(o firewall.Options) error {
 	if !e.fwOn {
 		return nil
 	}
-	return e.d.FW.Update(o)
+	return e.fwInstall(e.d.FW.Update, o)
 }
 
 // fwDisable снимает блокировку. Снятие без блокировки безопасно.

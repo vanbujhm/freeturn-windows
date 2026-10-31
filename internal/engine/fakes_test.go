@@ -69,6 +69,16 @@ func (c *calls) has(name string) bool {
 	return slices.Contains(c.snapshot(), name)
 }
 
+func (c *calls) count(name string) int {
+	n := 0
+	for _, got := range c.snapshot() {
+		if got == name {
+			n++
+		}
+	}
+	return n
+}
+
 type fakeCore struct {
 	log     *calls
 	engine  *Engine
@@ -357,6 +367,7 @@ func newHarness(t *testing.T, tune ...func(*Deps)) *harness {
 		Now:              time.Now,
 		CoreTimeout:      time.Minute,
 		HandshakeTimeout: time.Minute,
+		FirewallGrace:    time.Minute,
 	}
 	for _, f := range tune {
 		f(&d)
@@ -449,4 +460,8 @@ func withCoreTimeout(d time.Duration) func(*Deps) {
 
 func withHandshakeTimeout(d time.Duration) func(*Deps) {
 	return func(deps *Deps) { deps.HandshakeTimeout = d }
+}
+
+func withFirewallGrace(d time.Duration) func(*Deps) {
+	return func(deps *Deps) { deps.FirewallGrace = d }
 }

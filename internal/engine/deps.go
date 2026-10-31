@@ -44,7 +44,8 @@ type Network interface {
 	OtherTunnel(exclude uint64) (string, bool)
 }
 
-// Firewall ставит и снимает kill switch. Движок не вызывает его методы одновременно.
+// Firewall ставит и снимает kill switch. Движок не вызывает его методы одновременно, кроме
+// одного случая: Disable во время установки, которая не кончилась за FirewallGrace.
 type Firewall interface {
 	Enable(firewall.Options) error
 	Update(firewall.Options) error
@@ -57,7 +58,8 @@ type Protector interface {
 }
 
 // Resolver разрешает домены через DNS физического интерфейса. Отмена ctx прерывает
-// работу, домен без адресов просто не попадает в результат.
+// работу, домен без адресов просто не попадает в результат. Resolve вызывается одновременно
+// из нескольких горутин.
 type Resolver interface {
 	Resolve(ctx context.Context, domains []string, ph model.Physical) []netip.Addr
 }
@@ -81,9 +83,13 @@ type Deps struct {
 	Now      func() time.Time
 
 	CoreTimeout, HandshakeTimeout time.Duration // 60 с и 20 с
+	// FirewallGrace - сколько Disconnect ждёт идущий вызов брандмауэра, прежде чем снять
+	// блокировку мимо него. 6 с: на 1 с больше срока начала транзакции WFP.
+	FirewallGrace time.Duration
 }
 
 const (
 	defaultCoreTimeout      = 60 * time.Second
 	defaultHandshakeTimeout = 20 * time.Second
+	defaultFirewallGrace    = 6 * time.Second
 )
