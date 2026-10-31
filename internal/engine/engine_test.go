@@ -1049,6 +1049,31 @@ func (h *harness) wantNoSecrets(secrets []string, extra ...string) {
 	}
 }
 
+// Строка ядра идёт в журнал мимо движка, поэтому служба маскирует её через MaskLog.
+func TestMaskLog(t *testing.T) {
+	h := newHarness(t)
+	const plain = "обычная строка ядра"
+	if got := h.e.MaskLog(plain); got != plain {
+		t.Fatalf("без сессии MaskLog = %q", got)
+	}
+
+	req := testRequest()
+	secrets := secretsOf(req.Profile)
+	h.connect(req)
+	h.waitPhase(model.PhaseConnected)
+
+	line := plain + " " + strings.Join(secrets, " ")
+	got := h.e.MaskLog(line)
+	if !strings.HasPrefix(got, plain) || !strings.Contains(got, secretmask.Replacement) {
+		t.Errorf("MaskLog = %q", got)
+	}
+	h.wantNoSecrets(secrets, got)
+
+	// Ядро может дописать строку уже после отключения, секреты всё ещё надо прятать.
+	h.e.Disconnect()
+	h.wantNoSecrets(secrets, h.e.MaskLog(line))
+}
+
 func TestSecretsNeverLogged(t *testing.T) {
 	h := newHarness(t)
 	req := testRequest()

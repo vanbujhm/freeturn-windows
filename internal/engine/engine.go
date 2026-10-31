@@ -824,6 +824,11 @@ func (e *Engine) masked(s string) string {
 	return m.Mask(s)
 }
 
+// MaskLog прячет секреты подключения в строке, которая идёт в журнал мимо движка: от ядра
+// или устройства WireGuard. Пока подключений не было, строка не меняется. Masker прошлого
+// подключения остаётся: опоздавшая строка ядра может нести его секреты.
+func (e *Engine) MaskLog(s string) string { return e.masked(s) }
+
 // logf пишет в журнал. Текст проходит через Masker, другого пути в журнал нет.
 func (e *Engine) logf(level, msg string) {
 	e.d.Logf(level, e.masked(msg))
