@@ -97,6 +97,7 @@ type session struct {
 	coreState   string // последнее состояние от ядра
 	established bool   // шаг 5 пройден
 	netLost     bool   // физической сети нет, маршруты ждут её возвращения
+	bypassDirty bool   // исключения не дошли до системы, следующая сверка повторит
 	ph          model.Physical
 	listen      netip.AddrPort
 	cfg         *wgconf.Config
@@ -421,7 +422,9 @@ func (e *Engine) run(s *session) {
 	if err == nil {
 		// На шагах 3-5 NetworkChanged ничего не делает, а сеть могла смениться.
 		e.followNetwork(s)
-		e.markConnected(s)
+		if s.stopped() == nil {
+			e.markConnected(s)
+		}
 		<-s.ctx.Done()
 		err = context.Cause(s.ctx)
 	}

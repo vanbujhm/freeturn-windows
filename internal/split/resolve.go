@@ -38,8 +38,9 @@ func NewResolver(protect func(fd int) bool) *DNSResolver {
 	return &DNSResolver{protect: protect, port: dnsPort, timeout: resolveTimeout}
 }
 
-// Resolve возвращает адреса A и AAAA, кроме подставных. Домен, который не разрешился, просто
-// не попадает в результат. Без DNS-серверов у интерфейса разрешать нечем.
+// Resolve возвращает адреса A и AAAA, кроме тех, что не годятся для маршрута, см. unroutable.
+// Домен, который не разрешился, просто не попадает в результат. Без DNS-серверов у интерфейса
+// разрешать нечем.
 func (r *DNSResolver) Resolve(ctx context.Context, domains []string, ph model.Physical) []netip.Addr {
 	if len(ph.DNS) == 0 {
 		return nil
@@ -63,7 +64,7 @@ func (r *DNSResolver) lookup(ctx context.Context, domain string, servers []netip
 		addrs, err := r.client(server).LookupNetIP(try, "ip", name)
 		done()
 		if err == nil {
-			return withoutFakeIPs(addrs)
+			return routable(addrs)
 		}
 		var dnsErr *net.DNSError
 		if ctx.Err() != nil || (errors.As(err, &dnsErr) && dnsErr.IsNotFound) {
@@ -98,9 +99,16 @@ func (r *DNSResolver) protectSocket(_, _ string, c syscall.RawConn) error {
 	return nil
 }
 
-func withoutFakeIPs(addrs []netip.Addr) []netip.Addr {
+func routable(addrs []netip.Addr) []netip.Addr {
 	for i, a := range addrs {
 		addrs[i] = a.Unmap()
 	}
-	return slices.DeleteFunc(addrs, fakeIPRange.Contains)
+	return slices.DeleteFunc(addrs, unroutable)
+}
+
+// unroutable: маршрут обхода через шлюз на такой адрес никуда не ведёт. DNS с блокировкой
+// рекламы отвечает 0.0.0.0, а Mihomo подставными адресами.
+func unroutable(a netip.Addr) bool {
+	return fakeIPRange.Contains(a) || a.IsUnspecified() || a.IsLoopback() ||
+		a.IsMulticast() || a.IsLinkLocalUnicast()
 }

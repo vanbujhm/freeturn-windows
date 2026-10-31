@@ -33,12 +33,15 @@ func (e *Engine) watched(phases ...model.Phase) *session {
 
 // NetworkChanged приводит туннель к текущей сети. Вызывается из наблюдателя за маршрутом по
 // умолчанию, в том числе на обновлениях от роутера, поэтому без перемены ничего не делает.
-// Фаза меняется уже без netMu: откат не должен ждать OnChange.
 func (e *Engine) NetworkChanged() {
-	s := e.watched(model.PhaseConnected, model.PhaseReconnecting)
-	if s == nil {
-		return
+	if s := e.watched(model.PhaseConnected, model.PhaseReconnecting); s != nil {
+		e.reconcile(s)
 	}
+}
+
+// reconcile сверяет сессию с сетью и приводит фазу в соответствие. Фаза меняется уже без
+// netMu: откат не должен ждать OnChange.
+func (e *Engine) reconcile(s *session) {
 	e.followNetwork(s)
 	e.update(func(st *model.Status) bool {
 		if e.sess != s || s.ctx.Err() != nil || (st.Phase != model.PhaseConnected && st.Phase != model.PhaseReconnecting) {
@@ -82,17 +85,22 @@ func (e *Engine) networkLost(s *session) {
 }
 
 // moveTo переносит исключения на ph и переподключает ядро. Сбой переноса не фатален: домен
-// пойдёт через туннель, а сокетам ядра важнее новый интерфейс. Новый DNS без смены пути
-// запоминается молча, он нужен только разрешению доменов.
+// пойдёт через туннель, а сокетам ядра важнее новый интерфейс. Такой сбой чинит следующая
+// сверка, уже без Reconnect: постоянная ошибка маршрута иначе сбрасывала бы ядро на каждом
+// такте. Новый DNS без смены пути запоминается молча, он нужен только разрешению доменов.
 func (e *Engine) moveTo(s *session, ph model.Physical) {
 	e.mu.Lock()
 	returned := s.netLost
 	same := samePath(s.ph, ph)
+	dirty := s.bypassDirty
 	s.netLost = false
 	s.ph = ph
 	opts := s.firewallOptions()
 	e.mu.Unlock()
 	if same && !returned {
+		if dirty {
+			e.applyAddresses(s, ph, opts)
+		}
 		return
 	}
 
@@ -103,15 +111,25 @@ func (e *Engine) moveTo(s *session, ph model.Physical) {
 		// чего нет в его списке. Без очистки на том же интерфейсе маршруты не вернутся.
 		e.logFailure("снятие маршрутов обхода", e.d.Net.ClearBypass())
 	}
-	e.logFailure("перенос маршрутов обхода", e.d.Net.SetBypass(ph, opts.Bypass))
+	err := e.d.Net.SetBypass(ph, opts.Bypass)
 	if s.stopped() != nil {
 		return
 	}
-	e.logFailure("обновление блокировки", e.fwRefresh(opts))
+	e.noteBypass(s, errors.Join(err, e.fwRefresh(opts)))
 	if s.stopped() != nil {
 		return
 	}
 	e.nudge(s, e.d.Core.Reconnect, e.d.Now())
+}
+
+// noteBypass запоминает, дошли ли исключения до системы. Сбой повторит следующая сверка.
+func (e *Engine) noteBypass(s *session, err error) {
+	if err != nil {
+		e.logf(levelWarn, "исключения не применены: "+err.Error())
+	}
+	e.mu.Lock()
+	s.bypassDirty = err != nil
+	e.mu.Unlock()
 }
 
 // samePath: трафик идёт тем же путём. DNS на путь не влияет.
@@ -144,11 +162,16 @@ func (e *Engine) Woke() {
 
 // Tick - таймер службы, каждые 30 секунд. Домены могут занять до срока разрешения, но отмена
 // сессии прерывает их, так что Disconnect такт не ждёт.
+//
+// Сверка с сетью идёт первой: событие могло пропасть. Под капчей NetworkChanged не действует,
+// а наблюдатель выжидает тишину, и ядро успевает открыть капчу раньше его сообщения. Чтение
+// сети тоже может сорваться. Без сверки такая сессия осталась бы в Reconnecting до конца.
 func (e *Engine) Tick(now time.Time) {
 	s := e.watched(model.PhaseConnected, model.PhaseReconnecting)
 	if s == nil {
 		return
 	}
+	e.reconcile(s)
 	if e.reviveStale(s, now) {
 		e.logf(levelWarn, "пакеты уходят, а рукопожатия нет дольше 3 минут, переподключаем")
 		e.warnOnce(model.Warning{Code: model.WarnStaleHandshake})
@@ -211,7 +234,8 @@ func (e *Engine) warnOnce(w model.Warning) {
 }
 
 // refreshDomains разрешает домены заново и добавляет новые адреса к старым. Запросы идут без
-// netMu: они долгие, а откат и смена сети их не ждут. Без сети срок не расходуется.
+// netMu: они долгие, а откат и смена сети их не ждут. Без сети срок не расходуется. Адреса
+// держатся до отключения и при сбое применения: его чинит следующая сверка.
 func (e *Engine) refreshDomains(s *session, now time.Time) {
 	e.mu.Lock()
 	due := len(s.rules.Domains) > 0 && !s.netLost && now.Sub(s.domainsAt) >= domainRefresh
@@ -231,33 +255,27 @@ func (e *Engine) refreshDomains(s *session, now time.Time) {
 		return
 	}
 	e.mu.Lock()
-	known := len(s.resolved)
 	added := s.addResolved(slices.Concat(answers...))
 	opts := s.firewallOptions()
 	ph = s.ph
 	e.mu.Unlock()
-	if !added {
-		return
-	}
-	if err := e.applyAddresses(s, ph, opts); err != nil {
-		e.logf(levelWarn, "адреса доменов не применены: "+err.Error())
-		// Иначе следующее обновление не увидит в них нового и не повторит попытку.
-		e.mu.Lock()
-		s.resolved = s.resolved[:known]
-		e.mu.Unlock()
+	if added {
+		e.applyAddresses(s, ph, opts)
 	}
 }
 
 // applyAddresses сначала разрешает адреса в блокировке, потом ставит маршруты, как шаг 5:
-// маршрут без разрешения увёл бы адрес из работающего туннеля в блокировку.
-func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Options) error {
-	if err := e.fwRefresh(opts); err != nil {
-		return err
+// маршрут без разрешения увёл бы адрес из работающего туннеля в блокировку. SetBypass ставит
+// только недостающее, так что повтор после частичного сбоя безопасен.
+func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Options) {
+	err := e.fwRefresh(opts)
+	if s.stopped() != nil {
+		return
 	}
-	if err := s.stopped(); err != nil {
-		return nil
+	if err == nil {
+		err = e.d.Net.SetBypass(ph, opts.Bypass)
 	}
-	return e.d.Net.SetBypass(ph, opts.Bypass)
+	e.noteBypass(s, err)
 }
 
 // RefreshRates - таймер службы, каждую секунду. Rates читается без блокировок, поэтому сессия

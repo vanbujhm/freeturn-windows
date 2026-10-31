@@ -76,6 +76,16 @@ func (h *harness) wantLogged(part string) {
 	h.t.Errorf("в журнале нет %q: %v", part, h.logLines())
 }
 
+// waitCancelled ждёт отмены сессии, откат которой ещё не кончился.
+func (h *harness) waitCancelled() {
+	h.t.Helper()
+	h.waitFor("отмена", func() bool {
+		h.e.mu.Lock()
+		defer h.e.mu.Unlock()
+		return h.e.sess != nil && h.e.sess.ctx.Err() != nil
+	})
+}
+
 func hasPrefix(list []netip.Prefix, a netip.Addr) bool {
 	return slices.Contains(list, netip.PrefixFrom(a, a.BitLen()))
 }
@@ -296,6 +306,187 @@ func TestNetworkChangedStepFails(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Сбой переноса чинится следующей сверкой, а ядро переподключается один раз: иначе постоянная
+// ошибка маршрута сбрасывала бы его на каждом такте и обновлении от роутера.
+func TestFailedMoveRetriedWithoutReconnect(t *testing.T) {
+	cases := map[string]func(*harness){
+		"такт":    func(h *harness) { h.e.Tick(time.Now()) },
+		"событие": func(h *harness) { h.e.NetworkChanged() },
+	}
+	for name, again := range cases {
+		for _, step := range []string{"net.bypass", "fw.update"} {
+			t.Run(name+" "+step, func(t *testing.T) {
+				h := newHarness(t)
+				h.up(subnetRequest())
+				h.log.failOn(step, errBoom)
+				h.net.setPhysical(otherPhysical(), nil)
+				h.e.NetworkChanged()
+
+				// Ошибка не прошла: попытка повторяется и дальше.
+				tries := h.log.count(step)
+				again(h)
+				if got := h.log.count(step); got != tries+1 {
+					t.Errorf("повторов %d", got-tries)
+				}
+
+				h.log.failOn(step, nil)
+				again(h)
+				if got := h.log.count(step); got != tries+2 {
+					t.Errorf("повторов %d", got-tries)
+				}
+				if got := h.log.count("core.reconnect"); got != 1 {
+					t.Errorf("core.reconnect %d раз", got)
+				}
+				if got := h.net.bypassPhysical(); got.LUID != otherPhysical().LUID {
+					t.Errorf("обход ушёл на %+v", got)
+				}
+
+				// Починилось: больше не трогаем.
+				bypasses := h.log.count("net.bypass")
+				again(h)
+				if got := h.log.count("net.bypass"); got != bypasses {
+					t.Errorf("лишний net.bypass: %d", got-bypasses)
+				}
+			})
+		}
+	}
+}
+
+// Повтор идёт как шаг 5: без разрешения маршрут не ставится.
+func TestRetryKeepsFirewallFirst(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	h.log.failOn("net.bypass", errBoom)
+	h.net.setPhysical(otherPhysical(), nil)
+	h.e.NetworkChanged()
+	h.log.failOn("net.bypass", nil)
+	from := len(h.log.snapshot())
+
+	h.e.Tick(time.Now())
+
+	h.wantSince(from, "fw.update", "net.bypass", "tunnel.stats")
+}
+
+// Наблюдатель выжидает 2 с тишины, а ядро за это время успевает восстановиться и открыть
+// капчу. Событие о возвращении сети теряется, и без сверки в такте фаза осталась бы
+// Reconnecting до конца сессии, а исключения на старом интерфейсе.
+func TestNetworkReturnedUnderCaptcha(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	h.net.setPhysical(model.Physical{}, netcfg.ErrNoNetwork)
+	h.e.NetworkChanged()
+
+	h.e.OnCaptcha(captchaURL, true)
+	h.waitPhase(model.PhaseCaptcha)
+	ph := otherPhysical()
+	h.net.setPhysical(ph, nil)
+	h.e.NetworkChanged()
+	h.e.OnCaptcha("", false)
+	h.e.OnCoreState("connected", 3, 12, "")
+
+	h.e.Tick(time.Now())
+
+	if st := h.e.Status(); st.Phase != model.PhaseConnected || st.Streams != 3 {
+		t.Errorf("статус %+v", st)
+	}
+	if h.prot.i4 != ph.Index4 || h.prot.i6 != ph.Index6 {
+		t.Errorf("protect: %d, %d", h.prot.i4, h.prot.i6)
+	}
+	if got := h.net.bypassPhysical(); got.LUID != ph.LUID {
+		t.Errorf("обход ушёл на %+v", got)
+	}
+	h.wantCalled("net.bypassClear", "core.reconnect")
+	h.e.RefreshRates()
+	h.wantCalled("core.rates")
+}
+
+// Событие о возвращении сети не прочиталось. Следующий такт дочитывает.
+func TestNetworkReturnReadFails(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	h.net.setPhysical(model.Physical{}, netcfg.ErrNoNetwork)
+	h.e.NetworkChanged()
+	h.net.setPhysical(model.Physical{}, errBoom)
+	h.e.NetworkChanged()
+	if st := h.e.Status(); st.Phase != model.PhaseReconnecting {
+		t.Fatalf("статус %+v", st)
+	}
+
+	h.net.setPhysical(firstPhysical(), nil)
+	h.e.Tick(time.Now())
+
+	if st := h.e.Status(); st.Phase != model.PhaseConnected {
+		t.Errorf("статус %+v", st)
+	}
+	h.wantCalled("net.bypassClear", "core.reconnect")
+}
+
+// Смена сети под капчей на живом туннеле: событие не действует, такт после капчи догоняет.
+func TestNetworkMovedUnderCaptcha(t *testing.T) {
+	h := newHarness(t)
+	h.up(subnetRequest())
+	h.e.OnCaptcha(captchaURL, true)
+	h.waitPhase(model.PhaseCaptcha)
+	ph := otherPhysical()
+	h.net.setPhysical(ph, nil)
+	h.e.NetworkChanged()
+	h.e.Tick(time.Now())
+	h.wantNotCalled("core.reconnect")
+
+	h.e.OnCaptcha("", false)
+	h.e.Tick(time.Now())
+
+	if got := h.net.bypassPhysical(); got.LUID != ph.LUID {
+		t.Errorf("обход ушёл на %+v", got)
+	}
+	if got := h.log.count("core.reconnect"); got != 1 {
+		t.Errorf("core.reconnect %d раз", got)
+	}
+}
+
+// Такт замечает потерю сети и без события.
+func TestTickNoticesLostNetwork(t *testing.T) {
+	h := newHarness(t)
+	from := h.up(subnetRequest())
+	h.net.setPhysical(model.Physical{}, netcfg.ErrNoNetwork)
+
+	h.e.Tick(time.Now())
+
+	if st := h.e.Status(); st.Phase != model.PhaseReconnecting {
+		t.Errorf("статус %+v", st)
+	}
+	h.wantSince(from)
+}
+
+// Отмена во время сверки на шаге 6: окно не должно увидеть Connected у отменённой сессии.
+func TestCancelDuringStep6Check(t *testing.T) {
+	h := newHarness(t)
+	routes := h.log.hold("net.routes")
+	defer routes()
+	h.connect(subnetRequest())
+	h.waitCall("net.routes")
+	h.net.setPhysical(otherPhysical(), nil)
+	update := h.log.hold("fw.update")
+	defer update()
+	routes()
+	h.waitCall("fw.update")
+
+	stopped := disconnectAsync(h.e)
+	h.waitCancelled()
+	update()
+	<-stopped
+
+	for _, st := range h.changeLog() {
+		if st.Phase == model.PhaseConnected {
+			t.Errorf("Connected у отменённой сессии: %+v", st)
+		}
+	}
+	if st := h.e.Status(); st.Phase != model.PhaseIdle {
+		t.Errorf("статус %+v", st)
+	}
+	h.wantNotCalled("core.reconnect")
 }
 
 func TestNetworkChangedOutsideSession(t *testing.T) {
@@ -988,8 +1179,8 @@ func TestDomainRefreshSkippedWithoutNetwork(t *testing.T) {
 	}
 }
 
-// Адрес считается добавленным, только если дошёл и до блокировки, и до маршрутов: иначе
-// следующее обновление не увидит в нём нового и не повторит попытку.
+// Адреса держатся до отключения: сбой их не забывает, следующий такт повторяет применение
+// сам, без нового разрешения и без Reconnect.
 func TestDomainRefreshFailureRetries(t *testing.T) {
 	for _, step := range []string{"fw.update", "net.bypass"} {
 		t.Run(step, func(t *testing.T) {
@@ -998,18 +1189,38 @@ func TestDomainRefreshFailureRetries(t *testing.T) {
 			h.up(domainRequest())
 			h.res.answer(testDomain, secondAddr)
 			h.log.failOn(step, errBoom)
+			at := time.Now().Add(domainRefresh)
 
-			h.e.Tick(time.Now().Add(domainRefresh))
+			h.e.Tick(at)
 			h.wantLogged(errBoom.Error())
 			if st := h.e.Status(); st.Phase != model.PhaseConnected {
 				t.Errorf("статус %+v", st)
 			}
 
+			// Домен больше не отвечает, но адрес уже получен и никуда не делся.
+			h.res.answer(testDomain)
+			resolved := h.log.count("resolve")
+			bypasses := h.log.count("net.bypass")
 			h.log.failOn(step, nil)
-			h.e.Tick(time.Now().Add(2 * domainRefresh))
-			if !hasPrefix(h.net.bypassed(), secondAddr) || !hasPrefix(h.fw.last().Bypass, secondAddr) {
-				t.Errorf("адрес не добавлен: обход %v, брандмауэр %v", h.net.bypassed(), h.fw.last().Bypass)
+			h.e.Tick(at.Add(30 * time.Second))
+
+			// Заглушка запоминает аргументы и при сбое, поэтому важен именно новый вызов.
+			if got := h.log.count("net.bypass"); got != bypasses+1 {
+				t.Errorf("повторов net.bypass: %d", got-bypasses)
 			}
+			for _, a := range []netip.Addr{firstAddr, secondAddr} {
+				if !hasPrefix(h.net.bypassed(), a) || !hasPrefix(h.fw.last().Bypass, a) {
+					t.Errorf("нет %s: обход %v, брандмауэр %v", a, h.net.bypassed(), h.fw.last().Bypass)
+				}
+			}
+			if got := h.log.count("resolve"); got != resolved {
+				t.Errorf("лишний resolve: %d", got-resolved)
+			}
+			h.wantNotCalled("core.reconnect")
+
+			from := len(h.log.snapshot())
+			h.e.Tick(at.Add(time.Minute))
+			h.wantSince(from, "tunnel.stats")
 		})
 	}
 }
@@ -1050,6 +1261,34 @@ func TestDisconnectDuringDomainRefresh(t *testing.T) {
 	h.wantNotCalled("fw.update")
 	if got := h.log.snapshot(); got[len(got)-1] != "core.stop" {
 		t.Errorf("журнал %v", got)
+	}
+}
+
+// Отмена между блокировкой и маршрутами: откат всё равно их снимет, ставить незачем.
+func TestDisconnectStopsAddressApply(t *testing.T) {
+	h := newHarness(t)
+	h.res.answers[testDomain] = []netip.Addr{firstAddr}
+	h.up(domainRequest())
+	h.res.answer(testDomain, secondAddr)
+	bypasses := h.log.count("net.bypass")
+	release := h.log.hold("fw.update")
+	defer release()
+
+	ticked := make(chan struct{})
+	go func() {
+		defer close(ticked)
+		h.e.Tick(time.Now().Add(domainRefresh))
+	}()
+	h.waitCall("fw.update")
+
+	stopped := disconnectAsync(h.e)
+	h.waitCancelled()
+	release()
+	<-ticked
+	<-stopped
+
+	if got := h.log.count("net.bypass"); got != bypasses {
+		t.Errorf("маршруты поставлены после отмены: %v", h.log.snapshot())
 	}
 }
 

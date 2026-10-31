@@ -211,6 +211,48 @@ func TestResolverDropsFakeIP(t *testing.T) {
 	}
 }
 
+// DNS с блокировкой рекламы отвечает 0.0.0.0, а такой ответ стал бы маршрутом обхода. Маршрут
+// через шлюз на эти адреса нигде не ведёт. Домен только с ними считается неразрешённым.
+func TestResolverDropsUnroutable(t *testing.T) {
+	for _, bad := range []string{
+		"0.0.0.0", "::",
+		"127.0.0.1", "::1",
+		"224.0.0.251", "ff02::fb", "ff0e::1",
+		"169.254.10.20", "fe80::1",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			a := netip.MustParseAddr(bad)
+			answers := zone(knownName, a, realV4)
+			answers[otherName+"."] = []netip.Addr{a}
+			srv := startDNS(t, "127.0.0.1:0", answers)
+			protect, _ := allowAll()
+			r := newLocalResolver(srv, protect)
+
+			got := r.Resolve(context.Background(), []string{knownName}, localDNS())
+			if !slices.Equal(got, []netip.Addr{realV4}) {
+				t.Errorf("вперемешку: %v", got)
+			}
+			if got := r.Resolve(context.Background(), []string{otherName}, localDNS()); len(got) != 0 {
+				t.Errorf("единственный ответ: %v", got)
+			}
+		})
+	}
+}
+
+// Внутренние адреса компании настоящие, домен на них обходит туннель законно.
+func TestResolverKeepsPrivateAddresses(t *testing.T) {
+	private := []netip.Addr{netip.MustParseAddr("10.1.2.3"), netip.MustParseAddr("fd00::1")}
+	srv := startDNS(t, "127.0.0.1:0", zone(knownName, private...))
+	protect, _ := allowAll()
+	r := newLocalResolver(srv, protect)
+
+	got := r.Resolve(context.Background(), []string{knownName}, localDNS())
+
+	if !slices.Contains(got, private[0]) || !slices.Contains(got, private[1]) {
+		t.Fatalf("ответ %v", got)
+	}
+}
+
 func TestResolverOnlyFakeIPIsEmpty(t *testing.T) {
 	srv := startDNS(t, "127.0.0.1:0", zone(knownName, fakeV4))
 	protect, _ := allowAll()
