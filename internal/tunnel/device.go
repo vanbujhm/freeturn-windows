@@ -128,13 +128,22 @@ func (d *Device) Close() {
 }
 
 // RemoveStale убирает адаптер, оставшийся от прошлого запуска. Отсутствие адаптера не ошибка.
+// Закрытие открытого через OpenAdapter дескриптора адаптер не удаляет: Wintun удаляет только
+// адаптер, созданный этим процессом. Поэтому существующий адаптер закрывается, затем создаётся
+// заново (с тем же именем и GUID он переиспользуется) и закрывается, что его удаляет.
 func RemoveStale() error {
-	a, err := wintun.OpenAdapter(AdapterName)
+	old, err := wintun.OpenAdapter(AdapterName)
 	if err != nil {
 		if isNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("tunnel: проверка старого адаптера: %w", err)
+	}
+	old.Close()
+
+	a, err := wintun.CreateAdapter(AdapterName, tun.WintunTunnelType, &adapterGUID)
+	if err != nil {
+		return fmt.Errorf("tunnel: захват старого адаптера: %w", err)
 	}
 	if err := a.Close(); err != nil {
 		return fmt.Errorf("tunnel: удаление старого адаптера: %w", err)

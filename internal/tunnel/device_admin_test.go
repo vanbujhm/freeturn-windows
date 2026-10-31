@@ -3,11 +3,14 @@
 package tunnel
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -37,7 +40,36 @@ func copyWintun() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(filepath.Dir(exe), "wintun.dll"), data, 0o644)
+	dst := filepath.Join(filepath.Dir(exe), "wintun.dll")
+	// Дочерний процесс теста запускается из той же папки, а DLL у родителя уже загружена
+	// и перезаписи не поддаётся: одинаковый файл не трогаем.
+	if cur, err := os.ReadFile(dst); err == nil && bytes.Equal(cur, data) {
+		return nil
+	}
+	return os.WriteFile(dst, data, 0o644)
+}
+
+// skipIfAdapterExists не даёт тесту убить живое подключение: адаптер FreeTurn уже есть.
+func skipIfAdapterExists(t *testing.T) {
+	t.Helper()
+	if _, err := net.InterfaceByName(AdapterName); err == nil {
+		t.Skipf("адаптер %s уже есть: не трогаем чужое подключение", AdapterName)
+	}
+}
+
+// waitAdapterGone ждёт исчезновения адаптера до 5 с.
+func waitAdapterGone(t *testing.T, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := net.InterfaceByName(AdapterName); err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(msg)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // fakeKey - выдуманный ключ: 32 байта одного значения.
@@ -62,15 +94,14 @@ func testConfig() *wgconf.Config {
 }
 
 func TestRemoveStaleNoAdapter(t *testing.T) {
-	if _, err := net.InterfaceByName(AdapterName); err == nil {
-		t.Skip("адаптер FreeTurn уже есть: проверять нечего, не трогаем чужое подключение")
-	}
+	skipIfAdapterExists(t)
 	if err := RemoveStale(); err != nil {
 		t.Fatalf("RemoveStale без адаптера: %v", err)
 	}
 }
 
 func TestOpenAndClose(t *testing.T) {
+	skipIfAdapterExists(t)
 	d, err := Open(testConfig(), netip.MustParseAddrPort("127.0.0.1:9"), t.Logf)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -101,15 +132,85 @@ func TestOpenAndClose(t *testing.T) {
 	d.Close() // повторный вызов безопасен
 
 	// Адаптер исчезает не мгновенно.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, err := net.InterfaceByName(AdapterName)
-		if err != nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("адаптер остался после Close")
-		}
-		time.Sleep(100 * time.Millisecond)
+	waitAdapterGone(t, "адаптер остался после Close")
+}
+
+const helperEnv = "FREETURN_HOLD_ADAPTER"
+
+// TestHelperHoldAdapter работает только как дочерний процесс TestRemoveStaleAfterCrash:
+// поднимает адаптер, сообщает об этом и ждёт, пока его убьют.
+func TestHelperHoldAdapter(t *testing.T) {
+	if os.Getenv(helperEnv) != "1" {
+		return
 	}
+	if _, err := Open(testConfig(), netip.MustParseAddrPort("127.0.0.1:9"), nil); err != nil {
+		fmt.Println("OPEN-FAILED:", err)
+		os.Exit(1)
+	}
+	fmt.Println("HOLDING-ADAPTER")
+	select {}
+}
+
+func TestRemoveStaleAfterCrash(t *testing.T) {
+	skipIfAdapterExists(t)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldAdapter$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	cmd.Stderr = os.Stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("запуск дочернего процесса: %v", err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+		// Что бы ни случилось, после теста адаптера быть не должно.
+		RemoveStale()
+	})
+
+	lines := make(chan string, 8)
+	go func() {
+		sc := bufio.NewScanner(out)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	timeout := time.After(30 * time.Second)
+	for ready := false; !ready; {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				t.Fatal("дочерний процесс завершился, не поднявшись")
+			}
+			switch {
+			case l == "HOLDING-ADAPTER":
+				ready = true
+			case len(l) >= 11 && l[:11] == "OPEN-FAILED":
+				t.Fatalf("дочерний процесс: %s", l)
+			}
+		case <-timeout:
+			t.Fatal("дочерний процесс не поднял адаптер за 30 с")
+		}
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	cmd.Wait()
+	killed = true
+
+	_, err = net.InterfaceByName(AdapterName)
+	t.Logf("адаптер после убитого процесса найден: %v (ошибка поиска: %v)", err == nil, err)
+
+	if err := RemoveStale(); err != nil {
+		t.Fatalf("RemoveStale: %v", err)
+	}
+	waitAdapterGone(t, "RemoveStale не убрал адаптер")
 }
