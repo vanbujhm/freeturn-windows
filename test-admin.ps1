@@ -19,7 +19,7 @@ if (-not $packages) {
 
 $env:CGO_ENABLED = '0'
 # Вывод go test идёт в файл целиком, включая ошибки сборки.
-& go test -count=1 -v -tags admin @packages *> $OutFile
+& go test -count=1 -v -tags admin @packages 2>&1 | Out-File -LiteralPath $OutFile -Encoding utf8
 $code = $LASTEXITCODE
 "exit code: $code" | Out-File -LiteralPath $OutFile -Append -Encoding utf8
 exit $code

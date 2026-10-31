@@ -67,6 +67,24 @@ func planRoutes(allowed []netip.Prefix) []netip.Prefix {
 	return out
 }
 
+// ipv6SinkOnly: IPv6-маршруты плана состоят только из заглушки, добавленной planRoutes
+// (полный IPv4 без единого IPv6-префикса в конфиге).
+func ipv6SinkOnly(allowed []netip.Prefix) bool {
+	full4 := false
+	for _, p := range allowed {
+		if !p.IsValid() {
+			continue
+		}
+		if p.Addr().Is6() {
+			return false
+		}
+		if p.Masked() == defaultV4 {
+			full4 = true
+		}
+	}
+	return full4
+}
+
 // ConfigureInterface ставит адреса адаптера, метрику 0 (без автоматической) и MTU.
 func ConfigureInterface(luid uint64, addrs []netip.Prefix, mtu int) error {
 	l := winipcfg.LUID(luid)
@@ -116,8 +134,11 @@ func ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) er
 	if err := l.SetRoutesForFamily(windows.AF_INET, routes4); err != nil {
 		return fmt.Errorf("маршруты IPv4: %w", err)
 	}
-	if len(routes6) > 0 {
-		if err := l.SetRoutesForFamily(windows.AF_INET6, routes6); err != nil {
+	// IPv6 ставится всегда, даже пустым: повторный вызов с меньшим конфигом снимает старые маршруты.
+	// Нет стека IPv6 (ERROR_NOT_FOUND): терпим, если маршрутов нет или это только заглушка ::/1 + 8000::/1,
+	// которую добавил planRoutes. Свои IPv6-префиксы конфига без стека IPv6 дают ошибку.
+	if err := l.SetRoutesForFamily(windows.AF_INET6, routes6); err != nil {
+		if !(errors.Is(err, windows.ERROR_NOT_FOUND) && (len(routes6) == 0 || ipv6SinkOnly(allowed))) {
 			return fmt.Errorf("маршруты IPv6: %w", err)
 		}
 	}
@@ -222,13 +243,7 @@ func SetBypass(ph model.Physical, prefixes []netip.Prefix) error {
 	defer bypassMu.Unlock()
 
 	del, add := diffBypass(bypassApplied, bypassFor(ph, prefixes))
-	var errs []error
-	for _, r := range del {
-		if err := deleteRoute(r); err != nil {
-			errs = append(errs, err)
-		}
-		bypassApplied = slices.DeleteFunc(bypassApplied, func(x bypassRoute) bool { return x == r })
-	}
+	errs := dropRoutes(&bypassApplied, del, deleteRoute)
 	for _, r := range add {
 		err := winipcfg.LUID(r.LUID).AddRoute(r.Prefix, r.NextHop, 0)
 		switch {
@@ -248,14 +263,23 @@ func ClearBypass() error {
 	bypassMu.Lock()
 	defer bypassMu.Unlock()
 
-	var errs []error
-	for _, r := range bypassApplied {
-		if err := deleteRoute(r); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	bypassApplied = nil
+	errs := dropRoutes(&bypassApplied, slices.Clone(bypassApplied), deleteRoute)
 	return errors.Join(errs...)
+}
+
+// dropRoutes удаляет маршруты через rm и убирает из applied только удалённые.
+// Маршрут, который не удалось удалить, остаётся в списке: его повторят при следующем вызове,
+// а не потеряют навсегда.
+func dropRoutes(applied *[]bypassRoute, del []bypassRoute, rm func(bypassRoute) error) []error {
+	var errs []error
+	for _, r := range del {
+		if err := rm(r); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		*applied = slices.DeleteFunc(*applied, func(x bypassRoute) bool { return x == r })
+	}
+	return errs
 }
 
 // deleteRoute удаляет маршрут; если его уже нет, это не ошибка.

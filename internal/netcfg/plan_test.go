@@ -254,15 +254,15 @@ func TestDiffBypass(t *testing.T) {
 
 func TestDebouncerFiresOnceAfterQuiet(t *testing.T) {
 	var n atomic.Int32
-	d := newDebouncer(60*time.Millisecond, func() { n.Add(1) })
+	d := newDebouncer(200*time.Millisecond, func() { n.Add(1) })
 	for range 5 {
 		d.trigger()
-		time.Sleep(15 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	if n.Load() != 0 {
 		t.Fatal("обратный вызов сработал до окончания тишины")
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	if n.Load() != 1 {
 		t.Fatalf("вызовов %d, ожидался один", n.Load())
 	}
@@ -281,5 +281,43 @@ func TestDebouncerStop(t *testing.T) {
 	time.Sleep(120 * time.Millisecond)
 	if n.Load() != 0 {
 		t.Fatal("trigger после stop запланировал вызов")
+	}
+}
+
+func TestIPv6SinkOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want bool
+	}{
+		{"полный IPv4", []string{"0.0.0.0/0"}, true},
+		{"полный обоих семейств", []string{"0.0.0.0/0", "::/0"}, false},
+		{"полный IPv4 и свой IPv6", []string{"0.0.0.0/0", "fd00::/8"}, false},
+		{"частичный IPv4", []string{"10.0.0.0/24"}, false},
+		{"пусто", nil, false},
+	}
+	for _, c := range cases {
+		if got := ipv6SinkOnly(pfx(t, c.in...)); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDropRoutesKeepsFailed(t *testing.T) {
+	a := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	b := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("198.51.100.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	c := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("192.0.2.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	applied := []bypassRoute{a, b, c}
+	errs := dropRoutes(&applied, []bypassRoute{a, b}, func(r bypassRoute) error {
+		if r == b {
+			return errors.New("отказ")
+		}
+		return nil
+	})
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v", errs)
+	}
+	if !slices.Equal(applied, []bypassRoute{b, c}) {
+		t.Fatalf("applied = %v, ожидались b и c: неудалённый маршрут должен остаться", applied)
 	}
 }
