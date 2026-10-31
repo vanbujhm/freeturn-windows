@@ -2,10 +2,13 @@ module github.com/vanbujhm/freeturn-windows
 
 go 1.26.10
 
-require github.com/samosvalishe/free-turn-proxy v0.0.0
+require (
+	github.com/samosvalishe/free-turn-proxy v0.0.0
+	golang.zx2c4.com/wireguard/windows v1.1.1
+)
 
 require (
-	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814 // indirect
+	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
 	github.com/bdandy/go-socks4 v1.2.3 // indirect
