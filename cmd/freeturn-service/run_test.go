@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -23,6 +24,7 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 	"github.com/vanbujhm/freeturn-windows/internal/statefile"
+	"github.com/vanbujhm/freeturn-windows/internal/tunnel"
 )
 
 // fakeRestorer стоит на месте движка при восстановлении после перезапуска.
@@ -676,6 +678,36 @@ func TestDataPathsFor(t *testing.T) {
 	}
 	if p != want {
 		t.Fatalf("пути %+v", p)
+	}
+}
+
+// Без wintun.dll служба работает дальше: иначе блокировка не вернулась бы после падения.
+func TestClearStaleAdapter(t *testing.T) {
+	failure := errors.New("адаптер занят")
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"нечего убирать", nil, ""},
+		{"нет библиотеки", fmt.Errorf("%w: не найдена", tunnel.ErrNoWintun), "error: "},
+		{"другой сбой", failure, "warn: старый адаптер не удалён: "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := &logCatcher{}
+			clearStaleAdapter(func() error { return tt.err }, logs.write)
+			got := logs.got()
+			if tt.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("журнал %q", got)
+				}
+				return
+			}
+			if len(got) != 1 || !strings.HasPrefix(got[0], tt.want) {
+				t.Fatalf("журнал %q", got)
+			}
+		})
 	}
 }
 

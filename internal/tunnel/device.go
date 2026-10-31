@@ -60,6 +60,9 @@ func Open(cfg *wgconf.Config, endpoint netip.AddrPort, logf func(string, ...any)
 	if cfg == nil {
 		return nil, errors.New("tunnel: пустой конфиг")
 	}
+	if err := CheckDLL(); err != nil {
+		return nil, err
+	}
 	uapi, err := cfg.UAPIFor(endpoint)
 	if err != nil {
 		return nil, err

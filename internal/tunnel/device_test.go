@@ -2,8 +2,11 @@ package tunnel
 
 import (
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/vanbujhm/freeturn-windows/internal/wgconf"
 )
 
 // Рядом с тестовым exe нет wintun.dll, поэтому это тот же случай, что и удалённая антивирусом
@@ -13,6 +16,18 @@ func TestRemoveStaleWithoutDLL(t *testing.T) {
 		t.Skip("wintun.dll есть в System32")
 	}
 	if err := RemoveStale(); !errors.Is(err, ErrNoWintun) {
+		t.Fatalf("ошибка %v", err)
+	}
+}
+
+// Служба работает и без библиотеки, поэтому Connect доходит сюда, а движок переводит эту ошибку
+// в код adapter.
+func TestOpenWithoutDLL(t *testing.T) {
+	if CheckDLL() == nil {
+		t.Skip("wintun.dll есть в System32")
+	}
+	_, err := Open(&wgconf.Config{}, netip.MustParseAddrPort("127.0.0.1:45000"), nil)
+	if !errors.Is(err, ErrNoWintun) {
 		t.Fatalf("ошибка %v", err)
 	}
 }

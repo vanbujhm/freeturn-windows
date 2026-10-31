@@ -161,8 +161,7 @@ func createOrUpdate(m *mgr.Mgr, exe string) (*mgr.Service, error) {
 
 // uninstall останавливает и удаляет службу, потом убирает следы. Туннель снимает сама служба
 // при остановке. Драйвер трогается только после удаления службы: WintunDeleteDriver не удаляет
-// занятый драйвер, например нужный Amnezia, поэтому его ошибка здесь не важна. Без wintun.dll
-// остальное всё равно убирается, а ошибка возвращается в конце.
+// занятый драйвер, например нужный Amnezia, поэтому его ошибка здесь не важна.
 func uninstall() error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -174,14 +173,18 @@ func uninstall() error {
 		return err
 	}
 	_ = eventlog.Remove(serviceName) // источника может и не быть
+	removeWintun(tunnel.CheckDLL, tunnel.RemoveStale, wintun.Uninstall)
+	return removeData()
+}
 
-	dllErr := tunnel.CheckDLL()
-	if dllErr == nil {
-		// Адаптер остаётся, только если служба упала и больше не запускалась.
-		_ = tunnel.RemoveStale()
-		_ = wintun.Uninstall()
+// removeWintun убирает адаптер и драйвер, если есть чем: без wintun.dll удаление идёт дальше.
+// Адаптер остаётся, только если служба упала и больше не запускалась.
+func removeWintun(check, removeAdapter, removeDriver func() error) {
+	if check() != nil {
+		return
 	}
-	return errors.Join(dllErr, removeData())
+	_ = removeAdapter()
+	_ = removeDriver()
 }
 
 // removeData снимает маршруты и удаляет каталог. Сначала каталог проверяется, как при запуске:

@@ -14,6 +14,7 @@ import (
 
 	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 	"github.com/vanbujhm/freeturn-windows/internal/statefile"
+	"github.com/vanbujhm/freeturn-windows/internal/tunnel"
 )
 
 func TestServiceConfig(t *testing.T) {
@@ -107,6 +108,33 @@ func TestWaitStartedQueryError(t *testing.T) {
 	}, time.Minute, time.Millisecond)
 	if !errors.Is(err, failure) {
 		t.Fatalf("ошибка %v", err)
+	}
+}
+
+// Без wintun.dll звать Wintun незачем, а удаление идёт дальше без ошибки.
+func TestRemoveWintunWithoutDLL(t *testing.T) {
+	called := []string{}
+	removeWintun(
+		func() error { return tunnel.ErrNoWintun },
+		func() error { called = append(called, "adapter"); return nil },
+		func() error { called = append(called, "driver"); return nil },
+	)
+	if len(called) != 0 {
+		t.Fatalf("вызваны %v", called)
+	}
+}
+
+// Сначала адаптер: занятый драйвер Wintun не удалит. Ошибки не важны, драйвер могут держать другие.
+func TestRemoveWintun(t *testing.T) {
+	called := []string{}
+	busy := errors.New("драйвер занят")
+	removeWintun(
+		func() error { return nil },
+		func() error { called = append(called, "adapter"); return busy },
+		func() error { called = append(called, "driver"); return busy },
+	)
+	if !slices.Equal(called, []string{"adapter", "driver"}) {
+		t.Fatalf("вызваны %v", called)
 	}
 }
 

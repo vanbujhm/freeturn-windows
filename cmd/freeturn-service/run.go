@@ -85,12 +85,7 @@ func run(ctx context.Context, o runOptions) error {
 		logs.write(mobile.LevelWarn, "подробные строки ядра идут только в консоль: в них куки и токены капчи, не передавайте их")
 	}
 
-	if err := tunnel.RemoveStale(); errors.Is(err, tunnel.ErrNoWintun) {
-		logs.write(mobile.LevelError, err.Error())
-		return err
-	} else if err != nil {
-		logs.write(mobile.LevelWarn, "старый адаптер не удалён: "+err.Error())
-	}
+	clearStaleAdapter(tunnel.RemoveStale, logs.write)
 
 	state, err := statefile.Load(paths.state)
 	if err != nil {
@@ -149,6 +144,16 @@ func run(ctx context.Context, o runOptions) error {
 	}
 	logs.write(mobile.LevelInfo, "служба остановлена")
 	return nil
+}
+
+// clearStaleAdapter убирает адаптер прошлого запуска. Сбой запуск не останавливает, в том числе
+// без wintun.dll: блокировка после падения важнее, а Connect без библиотеки кончится кодом adapter.
+func clearStaleAdapter(remove func() error, logf func(level, msg string)) {
+	if err := remove(); errors.Is(err, tunnel.ErrNoWintun) {
+		logf(mobile.LevelError, err.Error())
+	} else if err != nil {
+		logf(mobile.LevelWarn, "старый адаптер не удалён: "+err.Error())
+	}
 }
 
 // within ждёт fn не дольше limit и сообщает, успел ли он. Иначе поток остаётся ждать, а всё, что
