@@ -84,6 +84,9 @@ type fakeCore struct {
 	engine  *Engine
 	silent  bool   // ядро молчит: connected не приходит сам
 	onStart func() // вызывается до возврата Start, как событие, обогнавшее его
+
+	mu    sync.Mutex
+	rates [4]int64 // txTotal, rxTotal, txRate, rxRate
 }
 
 func (f *fakeCore) Start(model.Profile, netip.AddrPort) error {
@@ -104,13 +107,26 @@ func (f *fakeCore) Stop()      { _ = f.log.hit("core.stop") }
 func (f *fakeCore) Reconnect() { _ = f.log.hit("core.reconnect") }
 func (f *fakeCore) Wake()      { _ = f.log.hit("core.wake") }
 func (f *fakeCore) Rates() (int64, int64, int64, int64) {
-	return 0, 0, 0, 0
+	_ = f.log.hit("core.rates")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rates[0], f.rates[1], f.rates[2], f.rates[3]
+}
+
+func (f *fakeCore) setRates(txTotal, rxTotal, txRate, rxRate int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rates = [4]int64{txTotal, rxTotal, txRate, rxRate}
 }
 
 type fakeDevice struct {
 	log       *calls
 	hang      bool // WaitHandshake ждёт отмены ctx
 	cancelled chan struct{}
+
+	mu       sync.Mutex
+	stats    tunnel.Stats
+	statsErr error
 }
 
 func (f *fakeDevice) LUID() uint64 { return testLUID }
@@ -127,8 +143,20 @@ func (f *fakeDevice) WaitHandshake(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (f *fakeDevice) Stats() (tunnel.Stats, error) { return tunnel.Stats{}, nil }
-func (f *fakeDevice) Close()                       { _ = f.log.hit("tunnel.close") }
+func (f *fakeDevice) Stats() (tunnel.Stats, error) {
+	_ = f.log.hit("tunnel.stats")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stats, f.statsErr
+}
+
+func (f *fakeDevice) setHandshake(at time.Time, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stats.LastHandshake, f.statsErr = at, err
+}
+
+func (f *fakeDevice) Close() { _ = f.log.hit("tunnel.close") }
 
 type fakeTunnels struct {
 	log *calls
@@ -149,14 +177,45 @@ type fakeNet struct {
 	other    string
 
 	mu       sync.Mutex
+	finds    int // сколько раз вызван FindPhysical
+	excluded uint64
 	bypass   []netip.Prefix
 	bypassPh model.Physical
 	allowed  []netip.Prefix
 	dns      []netip.Addr
 }
 
-func (f *fakeNet) FindPhysical(uint64) (model.Physical, error) {
+func (f *fakeNet) FindPhysical(exclude uint64) (model.Physical, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finds++
+	f.excluded = exclude
 	return f.physical, f.physErr
+}
+
+// setPhysical меняет то, что вернёт следующий FindPhysical.
+func (f *fakeNet) setPhysical(ph model.Physical, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.physical, f.physErr = ph, err
+}
+
+func (f *fakeNet) findCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.finds
+}
+
+func (f *fakeNet) lastExcluded() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.excluded
+}
+
+func (f *fakeNet) bypassPhysical() model.Physical {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bypassPh
 }
 
 func (f *fakeNet) ConfigureInterface(uint64, []netip.Prefix, int) error {
@@ -240,19 +299,45 @@ type fakeResolver struct {
 	log     *calls
 	answers map[string][]netip.Addr
 	hang    bool // Resolve ждёт отмены ctx
+
+	mu   sync.Mutex
+	used model.Physical // с каким интерфейсом шёл последний запрос
 }
 
-func (f *fakeResolver) Resolve(ctx context.Context, domains []string, _ model.Physical) []netip.Addr {
+func (f *fakeResolver) Resolve(ctx context.Context, domains []string, ph model.Physical) []netip.Addr {
 	_ = f.log.hit("resolve")
-	if f.hang {
-		<-ctx.Done()
-		return nil
-	}
+	f.mu.Lock()
+	f.used = ph
+	hang := f.hang
 	var out []netip.Addr
 	for _, d := range domains {
 		out = append(out, f.answers[d]...)
 	}
+	f.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return nil
+	}
 	return out
+}
+
+// answer задаёт ответ для домена, пока движок работает.
+func (f *fakeResolver) answer(domain string, addrs ...netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers[domain] = addrs
+}
+
+func (f *fakeResolver) setHang(hang bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hang = hang
+}
+
+func (f *fakeResolver) usedPhysical() model.Physical {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.used
 }
 
 const testLUID uint64 = 0xF00D

@@ -10,7 +10,9 @@
 //   - mu защищает статус и поля сессии, при вызовах зависимостей не держится;
 //   - notifyMu держит порядок OnChange, берётся раньше mu;
 //   - fwMu держится на время одного вызова брандмауэра. Вызовы не пересекаются, исключение
-//     одно: зависшую установку Disconnect обходит через Disable, см. awaitRollback.
+//     одно: зависшую установку Disconnect обходит через Disable, см. awaitRollback;
+//   - session.netMu разводит монитор и откат, берётся раньше fwMu и mu. Команд монитор не
+//     ждёт, поэтому ctl не берёт, а под netMu не вызывает OnChange.
 package engine
 
 import (
@@ -82,19 +84,28 @@ type session struct {
 	coreUp  chan struct{} // закрыт при первом connected от ядра
 	captcha chan struct{} // ёмкость 1: капча открылась или закрылась, таймер шага 3 смотрит статус
 
+	// netMu держит монитор, пока он трогает сеть или ядро, и откат целиком. Иначе опоздавший
+	// SetBypass оставил бы маршруты после ClearBypass.
+	netMu sync.Mutex
+
 	undo      []func()
 	holdBlock bool // сбой не снимает блокировку
 	keepBlock bool // решение для текущего отката
 
 	listening   bool // события ядра принимаются
 	coreSeen    bool
-	established bool // шаг 5 пройден
+	coreState   string // последнее состояние от ядра
+	established bool   // шаг 5 пройден
+	netLost     bool   // физической сети нет, маршруты ждут её возвращения
 	ph          model.Physical
 	listen      netip.AddrPort
 	cfg         *wgconf.Config
 	rules       split.Compiled
+	dev         TunnelDevice
 	luid        uint64
 	resolved    []netip.Addr
+	domainsAt   time.Time // когда домены разрешались в последний раз
+	nudgedAt    time.Time // когда монитор в последний раз будил ядро
 }
 
 // push кладёт обратную операцию на стек отката.
@@ -147,7 +158,7 @@ func (s *session) restingPhase(streams int) model.Phase {
 	switch {
 	case !s.established:
 		return model.PhaseConnecting
-	case streams > 0:
+	case streams > 0 && !s.netLost:
 		return model.PhaseConnected
 	default:
 		return model.PhaseReconnecting
@@ -295,6 +306,7 @@ func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 		fatal = &failure{code: e.d.Classify(errMsg), msg: errMsg}
 	case coreIdle:
 		// Приём закрывается раньше core.Stop, значит это не наша остановка: ядро умерло.
+		// idle шлёт только конец session.Run, начало Run всегда публикует connecting.
 		fatal = &failure{code: model.ErrCore, msg: "ядро остановилось без команды"}
 	}
 	e.update(func(st *model.Status) bool {
@@ -304,6 +316,7 @@ func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 		}
 		changed := st.Streams != streams || st.Total != total
 		st.Streams, st.Total = streams, total
+		s.coreState = state
 		if fatal != nil {
 			s.cancel(fatal)
 			return changed
@@ -314,7 +327,7 @@ func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 				s.coreSeen = true
 				close(s.coreUp)
 			}
-			if st.Phase == model.PhaseReconnecting {
+			if st.Phase == model.PhaseReconnecting && !s.netLost {
 				st.Phase = model.PhaseConnected
 				changed = true
 			}
@@ -355,7 +368,8 @@ func (e *Engine) OnCaptcha(url string, manual bool) {
 }
 
 // ArmBlock возвращает блокировку после падения службы: адаптера ещё нет, окно пришлёт профиль.
-// Ждать профиль движок начинает и тогда, когда блокировка не встала.
+// Ждать профиль движок начинает и тогда, когда блокировка не встала. Вызывается только при
+// старте службы, до того как канал начал принимать команды: статус заменяется целиком.
 func (e *Engine) ArmBlock(o model.Options) error {
 	e.ctl.Lock()
 	defer e.ctl.Unlock()
@@ -551,7 +565,7 @@ func (e *Engine) openTunnel(s *session) error {
 	luid := dev.LUID()
 
 	e.mu.Lock()
-	s.luid = luid
+	s.dev, s.luid = dev, luid
 	e.mu.Unlock()
 
 	if err := e.d.Net.ConfigureInterface(luid, s.cfg.Addresses, s.cfg.MTU); err != nil {
@@ -621,20 +635,15 @@ func (e *Engine) applyNetwork(s *session) error {
 // домен задержал бы подключение, а неразрешённый нельзя было бы назвать в предупреждении.
 // Предупреждения и адреса идут в порядке правил.
 func (e *Engine) resolveDomains(s *session) error {
-	domains, ph := s.rules.Domains, s.ph
-	answers := make([][]netip.Addr, len(domains))
-	var wg sync.WaitGroup
-	for i, domain := range domains {
-		wg.Go(func() { answers[i] = e.d.Resolver.Resolve(s.ctx, []string{domain}, ph) })
-	}
-	wg.Wait()
+	answers := e.lookupDomains(s, s.ph)
 	if err := s.stopped(); err != nil {
 		return err
 	}
 	for i, addrs := range answers {
 		if len(addrs) == 0 {
-			e.warn(model.WarnDomainUnresolved, domains[i])
-			e.logf(levelWarn, "домен не разрешился: "+domains[i])
+			domain := s.rules.Domains[i]
+			e.warn(model.WarnDomainUnresolved, domain)
+			e.logf(levelWarn, "домен не разрешился: "+domain)
 			continue
 		}
 		e.mu.Lock()
@@ -644,11 +653,24 @@ func (e *Engine) resolveDomains(s *session) error {
 	return nil
 }
 
+// lookupDomains спрашивает адреса всех доменов одновременно, ответы идут в порядке правил.
+func (e *Engine) lookupDomains(s *session, ph model.Physical) [][]netip.Addr {
+	answers := make([][]netip.Addr, len(s.rules.Domains))
+	var wg sync.WaitGroup
+	for i, domain := range s.rules.Domains {
+		wg.Go(func() { answers[i] = e.d.Resolver.Resolve(s.ctx, []string{domain}, ph) })
+	}
+	wg.Wait()
+	return answers
+}
+
 // markConnected - шаг 6. Открытая капча остаётся на экране. Потоки могли упасть, пока шли
 // шаги 4 и 5: тогда это уже Reconnecting.
 func (e *Engine) markConnected(s *session) {
+	now := e.d.Now()
 	e.update(func(st *model.Status) bool {
 		s.established = true
+		s.domainsAt = now
 		if st.Phase != model.PhaseCaptcha {
 			st.Phase = s.restingPhase(st.Streams)
 		}
@@ -668,9 +690,11 @@ func (e *Engine) finish(s *session, err error) {
 	s.listening = false
 	e.mu.Unlock()
 
+	s.netMu.Lock()
 	for _, undo := range slices.Backward(s.undo) {
 		undo()
 	}
+	s.netMu.Unlock()
 
 	if !isFailure {
 		e.update(func(*model.Status) bool {
