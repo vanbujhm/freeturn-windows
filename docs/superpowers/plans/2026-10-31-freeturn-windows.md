@@ -372,9 +372,9 @@ func WatchDefaultRoute(cb func()) (stop func(), err error)
 - [ ] **Step 1: Написать падающие тесты на чистые функции в `plan_test.go`**
 
 ```go
-TestPlanRoutesFullV4AddsV6Sink  // [0.0.0.0/0] -> маршруты 0.0.0.0/0 и ::/0
-TestPlanRoutesFullBoth          // [0.0.0.0/0, ::/0] -> без дублей
-TestPlanRoutesSplit             // [10.0.0.0/24] -> только он, ::/0 нет
+TestPlanRoutesFullV4AddsV6Sink  // [0.0.0.0/0] -> 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1; самого /0 нет
+TestPlanRoutesFullBoth          // [0.0.0.0/0, ::/0] -> те же четыре, без дублей
+TestPlanRoutesSplit             // [10.0.0.0/24] -> только он, IPv6-маршрутов нет
 TestPickDefault                 // таблица строк: выбирается наименьшая сумма метрик, исключённый LUID пропускается
 TestPickDefaultSkipsTunnelTypes // строка с IfType tunnel/none не выбирается как физическая
 TestPickDefaultNoRoutes         // пустая таблица -> ErrNoNetwork
