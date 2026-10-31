@@ -46,6 +46,10 @@ type commands struct {
 	mu      sync.Mutex
 	stopped atomic.Bool
 
+	// syncMu держит "прочитать маршруты, изменить state.Bypass, записать" одним действием.
+	// Берётся раньше stateMu и держится на время applied.
+	syncMu sync.Mutex
+	// stateMu защищает state и запись, applied под ним не вызывается.
 	stateMu sync.Mutex
 	state   statefile.State
 }
@@ -94,26 +98,31 @@ func (c *commands) clearWanted() {
 	c.write()
 }
 
-// syncBypass записывает набор маршрутов обхода, если он изменился. Набор читается под stateMu,
-// как в update: прочитанный раньше мог бы лечь на диск поверх более нового.
+// syncBypass записывает набор маршрутов обхода, если он изменился.
 func (c *commands) syncBypass() {
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
+	routes := c.applied()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	routes := c.applied()
 	if !slices.Equal(c.state.Bypass, routes) {
 		c.state.Bypass = routes
 		c.write()
 	}
 }
 
-// update меняет состояние и записывает его вместе с текущим набором маршрутов. Набор читается и
-// записывается под одним stateMu, иначе syncBypass успел бы записать более новый, а update
-// затёр бы его старым. Цена: clearWanted ждёт, пока applied вернёт набор.
+// update меняет состояние и записывает его вместе с текущим набором маршрутов. Чтение набора и
+// запись идут под одним syncMu, иначе syncBypass успел бы записать более новый набор, а update
+// затёр бы его старым. stateMu при чтении набора не держится: applied ждёт системных вызовов, а
+// clearWanted не должен ждать их.
 func (c *commands) update(change func(statefile.State) statefile.State) {
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
+	routes := c.applied()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.state = change(c.state)
-	c.state.Bypass = c.applied()
+	c.state.Bypass = routes
 	c.write()
 }
 

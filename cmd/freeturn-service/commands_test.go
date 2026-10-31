@@ -231,15 +231,20 @@ func TestSyncBypassKeepsWanted(t *testing.T) {
 	}
 }
 
-// Набор маршрутов читается под stateMu: прочитанный раньше мог бы лечь на диск поверх более
-// нового, записанного другим вызовом.
-func TestAppliedReadUnderStateLock(t *testing.T) {
+// Набор маршрутов читается под syncMu и без stateMu: прочитанный раньше мог бы лечь на диск
+// поверх более нового, а stateMu под applied задержал бы clearWanted.
+func TestAppliedReadUnderSyncLock(t *testing.T) {
 	tun, st := &fakeTunnel{}, &stateLog{routes: testBypass}
 	c := newCommands(tun, st, &logCatcher{})
 	c.applied = func() []netcfg.BypassRoute {
-		if c.stateMu.TryLock() {
+		if c.syncMu.TryLock() {
+			c.syncMu.Unlock()
+			t.Error("набор маршрутов читается без syncMu")
+		}
+		if !c.stateMu.TryLock() {
+			t.Error("набор маршрутов читается под stateMu")
+		} else {
 			c.stateMu.Unlock()
-			t.Error("набор маршрутов читается без stateMu")
 		}
 		return st.current()
 	}
@@ -249,6 +254,32 @@ func TestAppliedReadUnderStateLock(t *testing.T) {
 	st.setRoutes(nil)
 	c.syncBypass()
 	c.Disconnect()
+}
+
+// Зависшие системные вызовы маршрутов не должны оставить признак: applied ждёт их под замком.
+func TestClearWantedDuringHungRoutes(t *testing.T) {
+	tun, st := &fakeTunnel{}, &stateLog{}
+	c := newCommands(tun, st, &logCatcher{})
+	if err := c.Connect(ksRequest); err != nil {
+		t.Fatal(err)
+	}
+	hang, entered := make(chan struct{}), make(chan struct{}, 2)
+	defer close(hang)
+	c.applied = func() []netcfg.BypassRoute {
+		entered <- struct{}{}
+		<-hang
+		return nil
+	}
+	go c.syncBypass()
+	go c.update(wantedOff)
+	<-entered
+
+	if !within(c.clearWanted, 2*time.Second) {
+		t.Fatal("clearWanted ждёт зависшие маршруты")
+	}
+	if last := st.lastSaved(t); last.Wanted {
+		t.Fatalf("записано %+v", last)
+	}
 }
 
 // Зависшее отключение не должно оставить признак: следующий запуск вернул бы блокировку.
