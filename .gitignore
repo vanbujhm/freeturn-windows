@@ -1,0 +1,10 @@
+build/
+dist/
+node_modules/
+frontend/bindings/
+spikes/
+.superpowers/
+*.exe
+*.freeturn
+*.conf
+!third_party/**
