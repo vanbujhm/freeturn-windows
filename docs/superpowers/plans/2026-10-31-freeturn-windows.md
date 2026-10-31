@@ -384,7 +384,7 @@ TestPickDefaultNoRoutes         // пустая таблица -> ErrNoNetwork
 
 - [ ] **Step 3: Реализовать пакет на `winipcfg`**
 
-`LUID.SetIPAddressesForFamily`, `LUID.SetRoutesForFamily`, `LUID.SetDNS`, `LUID.IPInterface` (метрика 0, `UseAutomaticMetric=false`, MTU через `NLMTU`), `GetIPForwardTable2`, `GetAdaptersAddresses`, `RegisterRouteChangeCallback`. Чистые функции: `planRoutes` и `pickDefault`. `WatchDefaultRoute` гасит дребезг: вызывает `cb` спустя 2 секунды тишины.
+`LUID.SetIPAddressesForFamily`, `LUID.AddRoute` (без сброса маршрутов), `LUID.SetDNS`, `LUID.IPInterface` (метрика 0, `UseAutomaticMetric=false`, MTU через `NLMTU`), `GetIPForwardTable2`, `GetAdaptersAddresses`, `RegisterRouteChangeCallback`. Чистые функции: `planRoutes` и `pickDefault`. `WatchDefaultRoute` гасит дребезг: вызывает `cb` спустя 2 секунды тишины.
 
 `OtherTunnel` считает другим туннелем адаптер с маршрутом по умолчанию и типом интерфейса `IF_TYPE_PROP_VIRTUAL` или `IF_TYPE_TUNNEL`, кроме исключённого.
 

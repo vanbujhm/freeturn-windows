@@ -385,3 +385,48 @@ func TestAppliedBypassIsCopy(t *testing.T) {
 		t.Fatal("вызывающий испортил набор")
 	}
 }
+
+func TestSplitRoutes(t *testing.T) {
+	v4, v6 := splitRoutes(pfx(t, "10.0.0.0/24", "::/1", "128.0.0.0/1", "8000::/1"))
+	if got, want := strs(v4), []string{"10.0.0.0/24", "128.0.0.0/1"}; !slices.Equal(got, want) {
+		t.Fatalf("IPv4 %v, want %v", got, want)
+	}
+	if got, want := strs(v6), []string{"::/1", "8000::/1"}; !slices.Equal(got, want) {
+		t.Fatalf("IPv6 %v, want %v", got, want)
+	}
+	if v4, v6 := splitRoutes(nil); len(v4) != 0 || len(v6) != 0 {
+		t.Fatalf("пустой план дал %v и %v", v4, v6)
+	}
+}
+
+func TestAddRoutesToleratesExisting(t *testing.T) {
+	var added []string
+	add := func(p netip.Prefix, _ netip.Addr) error {
+		added = append(added, p.String())
+		if p == netip.MustParsePrefix("10.0.0.0/24") {
+			return windows.ERROR_OBJECT_ALREADY_EXISTS
+		}
+		return nil
+	}
+	if err := addRoutes(pfx(t, "10.0.0.0/24", "10.1.0.0/24"), netip.IPv4Unspecified(), add); err != nil {
+		t.Fatalf("существующий маршрут дал ошибку: %v", err)
+	}
+	if want := []string{"10.0.0.0/24", "10.1.0.0/24"}; !slices.Equal(added, want) {
+		t.Fatalf("добавлены %v, want %v", added, want)
+	}
+}
+
+func TestAddRoutesStopsOnError(t *testing.T) {
+	calls := 0
+	add := func(netip.Prefix, netip.Addr) error {
+		calls++
+		return windows.ERROR_NOT_FOUND
+	}
+	err := addRoutes(pfx(t, "::/1", "8000::/1"), netip.IPv6Unspecified(), add)
+	if !errors.Is(err, windows.ERROR_NOT_FOUND) {
+		t.Fatalf("ошибка %v, ожидался ERROR_NOT_FOUND", err)
+	}
+	if calls != 1 {
+		t.Fatalf("вызовов %d, ожидался 1", calls)
+	}
+}

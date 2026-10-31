@@ -93,6 +93,11 @@ func TestAdapterRoutesAndBypass(t *testing.T) {
 	if !hasRoute(t, luid, tunnelRoute) {
 		t.Fatalf("маршрута %s нет в таблице", tunnelRoute)
 	}
+	// Маршрут подсети адреса, созданный Windows, ApplyTunnelRoutes не трогает.
+	connected := netip.MustParsePrefix("10.255.77.0/24")
+	if !hasRoute(t, luid, connected) {
+		t.Fatalf("маршрут подсети %s пропал после ApplyTunnelRoutes", connected)
+	}
 	got, err := winipcfg.LUID(luid).DNS()
 	if err != nil || len(got) != 1 || got[0] != dns {
 		t.Fatalf("DNS адаптера = %v, %v; ожидался %s", got, err, dns)

@@ -119,26 +119,45 @@ func setInterface(l winipcfg.LUID, family winipcfg.AddressFamily, mtu int) error
 	return row.Set()
 }
 
-// ApplyTunnelRoutes ставит маршруты туннеля из AllowedIPs и DNS адаптера (шаг 5 подключения).
-// Следующий узел маршрутов нулевой: трафик уходит прямо на адаптер.
-func ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) error {
-	l := winipcfg.LUID(luid)
-	var routes4, routes6 []*winipcfg.RouteData
-	for _, p := range planRoutes(allowed) {
+// splitRoutes делит маршруты плана на IPv4 и IPv6.
+func splitRoutes(planned []netip.Prefix) (v4, v6 []netip.Prefix) {
+	for _, p := range planned {
 		if p.Addr().Is4() {
-			routes4 = append(routes4, &winipcfg.RouteData{Destination: p, NextHop: netip.IPv4Unspecified()})
+			v4 = append(v4, p)
 		} else {
-			routes6 = append(routes6, &winipcfg.RouteData{Destination: p, NextHop: netip.IPv6Unspecified()})
+			v6 = append(v6, p)
 		}
 	}
-	if err := l.SetRoutesForFamily(windows.AF_INET, routes4); err != nil {
+	return v4, v6
+}
+
+// addRoutes добавляет маршруты через add. Маршрут, который уже есть, не ошибка. Первая ошибка
+// прерывает добавление.
+func addRoutes(ps []netip.Prefix, nextHop netip.Addr, add func(netip.Prefix, netip.Addr) error) error {
+	for _, p := range ps {
+		if err := add(p, nextHop); err != nil && !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// ApplyTunnelRoutes ставит маршруты туннеля из AllowedIPs и DNS адаптера (шаг 5 подключения).
+// Следующий узел маршрутов нулевой: трафик уходит прямо на адаптер. Вызывается один раз на
+// свежем адаптере. Маршруты только добавляются: сброс снёс бы и маршруты подсети, которые
+// Windows создала при установке адреса (удаление одного тянет другие, и следующее удаление
+// отвечает ERROR_NOT_FOUND).
+func ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) error {
+	l := winipcfg.LUID(luid)
+	add := func(p netip.Prefix, nh netip.Addr) error { return l.AddRoute(p, nh, 0) }
+	routes4, routes6 := splitRoutes(planRoutes(allowed))
+	if err := addRoutes(routes4, netip.IPv4Unspecified(), add); err != nil {
 		return fmt.Errorf("маршруты IPv4: %w", err)
 	}
-	// IPv6 ставится всегда, даже пустым: повторный вызов с меньшим конфигом снимает старые маршруты.
-	// Нет стека IPv6 (ERROR_NOT_FOUND): терпим, если маршрутов нет или это только заглушка ::/1 + 8000::/1,
+	// Нет стека IPv6 (ERROR_NOT_FOUND): терпим, если это только заглушка ::/1 + 8000::/1,
 	// которую добавил planRoutes. Свои IPv6-префиксы конфига без стека IPv6 дают ошибку.
-	if err := l.SetRoutesForFamily(windows.AF_INET6, routes6); err != nil {
-		if !(errors.Is(err, windows.ERROR_NOT_FOUND) && (len(routes6) == 0 || ipv6SinkOnly(allowed))) {
+	if err := addRoutes(routes6, netip.IPv6Unspecified(), add); err != nil {
+		if !(errors.Is(err, windows.ERROR_NOT_FOUND) && ipv6SinkOnly(allowed)) {
 			return fmt.Errorf("маршруты IPv6: %w", err)
 		}
 	}
@@ -160,7 +179,9 @@ func ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) er
 }
 
 // ClearTunnel снимает с адаптера маршруты, DNS и адреса. Отсутствие семейства или
-// записи ошибкой не считается.
+// записи ошибкой не считается. FlushRoutes не прерывается на сбое и отдаёт последнюю ошибку:
+// удаление одного маршрута сносит связанные, и следующее удаление даёт ERROR_NOT_FOUND.
+// Эта ошибка поддельная, откат из-за неё не останавливается.
 func ClearTunnel(luid uint64) error {
 	l := winipcfg.LUID(luid)
 	var errs []error
