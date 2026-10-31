@@ -92,17 +92,18 @@ func (s *Store) Get(id string) (model.Profile, bool) {
 }
 
 // Save добавляет профиль или заменяет профиль с тем же ID. Пустой ID заменяется новым.
-// Если запись на диск не удалась, список в памяти не меняется.
-func (s *Store) Save(p model.Profile) error {
+// Возвращает профиль в том виде, в каком он сохранён, с ID. Если запись на диск не
+// удалась, список в памяти не меняется.
+func (s *Store) Save(p model.Profile) (model.Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.corrupt {
-		return ErrCorrupt
+		return model.Profile{}, ErrCorrupt
 	}
 	if p.ID == "" {
 		id, err := newID()
 		if err != nil {
-			return err
+			return model.Profile{}, err
 		}
 		p.ID = id
 	}
@@ -112,7 +113,10 @@ func (s *Store) Save(p model.Profile) error {
 	} else {
 		next = append(next, clone(p))
 	}
-	return s.commit(next)
+	if err := s.commit(next); err != nil {
+		return model.Profile{}, err
+	}
+	return clone(p), nil
 }
 
 // Delete удаляет профиль. Профиля с таким ID нет: не ошибка.

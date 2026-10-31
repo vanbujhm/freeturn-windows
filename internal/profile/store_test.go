@@ -84,7 +84,7 @@ func TestStoreSaveAndReopen(t *testing.T) {
 	s := mustOpen(t, path)
 	p := testProfile("Домашний сервер")
 	p.ID = "abc"
-	if err := s.Save(p); err != nil {
+	if _, err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,7 +114,7 @@ func TestStoreMissingFileIsEmpty(t *testing.T) {
 func TestStoreOpenCreatesParentDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a", "b", "profiles.dat")
 	s := mustOpen(t, path)
-	if err := s.Save(testProfile("x")); err != nil {
+	if _, err := s.Save(testProfile("x")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -124,10 +124,10 @@ func TestStoreOpenCreatesParentDir(t *testing.T) {
 
 func TestStoreSaveGeneratesID(t *testing.T) {
 	s := mustOpen(t, storePath(t))
-	if err := s.Save(testProfile("one")); err != nil {
+	if _, err := s.Save(testProfile("one")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Save(testProfile("two")); err != nil {
+	if _, err := s.Save(testProfile("two")); err != nil {
 		t.Fatal(err)
 	}
 	l := s.List()
@@ -148,11 +148,11 @@ func TestStoreSaveReplacesSameID(t *testing.T) {
 	s := mustOpen(t, storePath(t))
 	p := testProfile("old")
 	p.ID = "id1"
-	if err := s.Save(p); err != nil {
+	if _, err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
 	p.Name = "new"
-	if err := s.Save(p); err != nil {
+	if _, err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
 	l := s.List()
@@ -167,7 +167,7 @@ func TestStoreDelete(t *testing.T) {
 	a, b := testProfile("a"), testProfile("b")
 	a.ID, b.ID = "a", "b"
 	for _, p := range []model.Profile{a, b} {
-		if err := s.Save(p); err != nil {
+		if _, err := s.Save(p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -187,7 +187,7 @@ func TestStoreListIsACopy(t *testing.T) {
 	s := mustOpen(t, storePath(t))
 	p := testProfile("x")
 	p.ID = "x"
-	if err := s.Save(p); err != nil {
+	if _, err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
 	s.List()[0].DNSServers[0] = "испорчено"
@@ -201,7 +201,7 @@ func TestStoreListIsACopy(t *testing.T) {
 func TestStoreFileHasNoSecrets(t *testing.T) {
 	path := storePath(t)
 	s := mustOpen(t, path)
-	if err := s.Save(testProfile("Профиль")); err != nil {
+	if _, err := s.Save(testProfile("Профиль")); err != nil {
 		t.Fatal(err)
 	}
 	raw := readFile(t, path)
@@ -238,7 +238,7 @@ func TestStoreCorruptFile(t *testing.T) {
 	if l := s.List(); len(l) != 0 {
 		t.Fatalf("List: %+v", l)
 	}
-	if err := s.Save(testProfile("x")); !errors.Is(err, ErrCorrupt) {
+	if _, err := s.Save(testProfile("x")); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Save: %v", err)
 	}
 	if err := s.Delete("x"); !errors.Is(err, ErrCorrupt) {
@@ -272,7 +272,7 @@ func TestStoreEmptyFile(t *testing.T) {
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := s.Save(testProfile("x")); !errors.Is(err, ErrCorrupt) {
+	if _, err := s.Save(testProfile("x")); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("Save: %v", err)
 	}
 	if fi, err := os.Stat(path); err != nil || fi.Size() != 0 {
@@ -296,7 +296,7 @@ func TestStoreReset(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("profiles.dat остался: %v", err)
 	}
-	if err := s.Save(testProfile("после сброса")); err != nil {
+	if _, err := s.Save(testProfile("после сброса")); err != nil {
 		t.Fatal(err)
 	}
 	if l := mustOpen(t, path).List(); len(l) != 1 {
@@ -322,7 +322,7 @@ func TestStoreResetReplacesOlderBad(t *testing.T) {
 func TestStoreResetOnHealthyStoreKeepsData(t *testing.T) {
 	path := storePath(t)
 	s := mustOpen(t, path)
-	if err := s.Save(testProfile("x")); err != nil {
+	if _, err := s.Save(testProfile("x")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Reset(); err != nil {
@@ -343,7 +343,7 @@ func TestStoreAtomicWrite(t *testing.T) {
 	s := mustOpen(t, path)
 	p := testProfile("до")
 	p.ID = "keep"
-	if err := s.Save(p); err != nil {
+	if _, err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
 	before := readFile(t, path)
@@ -354,7 +354,7 @@ func TestStoreAtomicWrite(t *testing.T) {
 	}
 	p2 := testProfile("после")
 	p2.ID = "new"
-	err = s.Save(p2)
+	_, err = s.Save(p2)
 	holder.Close()
 	if err == nil {
 		t.Fatal("Save поверх занятого файла должен вернуть ошибку")
@@ -370,7 +370,7 @@ func TestStoreAtomicWrite(t *testing.T) {
 		t.Fatalf("остался временный файл: %v", entries)
 	}
 	// Когда файл свободен, запись проходит.
-	if err := s.Save(p2); err != nil {
+	if _, err := s.Save(p2); err != nil {
 		t.Fatal(err)
 	}
 	if len(mustOpen(t, path).List()) != 2 {
@@ -387,7 +387,7 @@ func TestStoreConcurrentSave(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			p := testProfile(fmt.Sprint("p", i))
-			if err := s.Save(p); err != nil {
+			if _, err := s.Save(p); err != nil {
 				t.Error(err)
 			}
 			s.List()
@@ -473,5 +473,35 @@ func TestSettingsFileHasNoSecrets(t *testing.T) {
 	}
 	if bytes.Contains(readFile(t, path), []byte("PrivateKey")) {
 		t.Fatal("в настройках секреты")
+	}
+}
+
+func TestStoreSaveReturnsStoredProfile(t *testing.T) {
+	path := storePath(t)
+	s := mustOpen(t, path)
+	saved, err := s.Save(testProfile("новый"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.ID) != 32 {
+		t.Fatalf("ID %q", saved.ID)
+	}
+	if got, ok := s.Get(saved.ID); !ok || !reflect.DeepEqual(got, saved) {
+		t.Fatalf("возвращённый профиль не совпал с сохранённым: %+v %v", got, ok)
+	}
+	saved.Name = "переименован"
+	again, err := s.Save(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != saved.ID {
+		t.Fatalf("ID изменился: %q -> %q", saved.ID, again.ID)
+	}
+	l := mustOpen(t, path).List()
+	if len(l) != 1 || l[0].Name != "переименован" {
+		t.Fatalf("повторный Save с ID должен заменить, а не дублировать: %+v", l)
+	}
+	if _, err := s.Save(model.Profile{}); err != nil || len(s.List()) != 2 {
+		t.Fatalf("пустой ID должен давать новый профиль: %v", err)
 	}
 }
