@@ -64,3 +64,23 @@ func TestForProfileNilConfig(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestForProfileShortSegmentNotMasked(t *testing.T) {
+	m := ForProfile(model.Profile{CallLink: "https://host/join"}, nil)
+	if got := m.Mask("join the call"); got != "join the call" {
+		t.Errorf("got %q", got)
+	}
+	if got := m.Mask("https://host/join"); got != "***" {
+		t.Errorf("ссылка целиком не замаскирована: %q", got)
+	}
+}
+
+func TestMaskNilSafe(t *testing.T) {
+	var nilMasker *Masker
+	if got := nilMasker.Mask("abc"); got != "abc" {
+		t.Errorf("nil: %q", got)
+	}
+	if got := (&Masker{}).Mask("abc"); got != "abc" {
+		t.Errorf("zero: %q", got)
+	}
+}

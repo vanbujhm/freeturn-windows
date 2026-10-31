@@ -27,6 +27,14 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestClassifyCyrillicDomain(t *testing.T) {
+	got, err := Classify("Почта.РФ")
+	want := model.Rule{Kind: model.RuleDomain, Value: "xn--80a1acny.xn--p1ai"}
+	if err != nil || got != want {
+		t.Errorf("got %+v, %v; want %+v", got, err, want)
+	}
+}
+
 func TestClassifyRejects(t *testing.T) {
 	for _, in := range []string{"", "   ", "not a domain!", "300.1.1.1/40", "300.1.1.1", "-a.example.com", "a..b"} {
 		if _, err := Classify(in); !errors.Is(err, ErrInvalid) {

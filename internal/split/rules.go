@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 
+	"golang.org/x/net/idna"
+
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
 
@@ -69,9 +71,14 @@ func Classify(value string) (model.Rule, error) {
 }
 
 // normalizeDomain приводит домен к нижнему регистру без точки на конце
-// и проверяет его по правилам имён узлов.
+// и проверяет его по правилам имён узлов. Юникод-имена (почта.рф)
+// переводятся в punycode, в правиле хранится ASCII-вид.
 func normalizeDomain(v string) (string, bool) {
-	d := strings.ToLower(strings.TrimSuffix(v, "."))
+	d, err := idna.Lookup.ToASCII(strings.TrimSuffix(v, "."))
+	if err != nil {
+		return "", false
+	}
+	d = strings.ToLower(d)
 	if d == "" || len(d) > 253 {
 		return "", false
 	}

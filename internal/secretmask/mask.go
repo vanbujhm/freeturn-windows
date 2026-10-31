@@ -14,6 +14,9 @@ import (
 // Replacement подставляется вместо каждого секрета.
 const Replacement = "***"
 
+// minSegmentLen задаёт наименьшую длину последнего сегмента ссылки, который маскируется отдельно.
+const minSegmentLen = 6
+
 // Masker заменяет известные секреты в строках.
 type Masker struct {
 	r *strings.Replacer
@@ -42,7 +45,11 @@ func New(secrets ...string) *Masker {
 // ForProfile собирает все секреты профиля и разобранного конфига WireGuard.
 // Конфиг может быть nil, если профиль ещё не разобран.
 func ForProfile(p model.Profile, c *wgconf.Config) *Masker {
-	secrets := []string{p.ObfKey, p.ClientID, p.CallLink, lastSegment(p.CallLink)}
+	secrets := []string{p.ObfKey, p.ClientID, p.CallLink}
+	// Короткий сегмент вроде "join" замаскировал бы половину журнала.
+	if seg := lastSegment(p.CallLink); len(seg) >= minSegmentLen {
+		secrets = append(secrets, seg)
+	}
 	if c != nil {
 		secrets = append(secrets, keyForms(c.PrivateKey)...)
 		for _, peer := range c.Peers {
@@ -76,6 +83,10 @@ func lastSegment(link string) string {
 }
 
 // Mask заменяет все секреты в строке.
+// Нулевой и nil-Masker возвращают строку без изменений.
 func (m *Masker) Mask(s string) string {
+	if m == nil || m.r == nil {
+		return s
+	}
 	return m.r.Replace(s)
 }
