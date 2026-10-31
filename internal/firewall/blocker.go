@@ -21,24 +21,6 @@ type baseObjects struct {
 	filters  windows.GUID
 }
 
-// Постоянные ключи провайдера и подуровня FreeTurn. Ключи WFP уникальны во всей системе,
-// поэтому их две пары: Update держит старую и новую сессии одновременно, а вторая сессия
-// с теми же ключами получила бы FWP_E_ALREADY_EXISTS. Пары чередуются.
-var sessionKeys = [2]baseObjects{
-	{
-		// d95aa1a2-3009-4590-8b30-6e791a093a70
-		provider: windows.GUID{Data1: 0xd95aa1a2, Data2: 0x3009, Data3: 0x4590, Data4: [8]byte{0x8b, 0x30, 0x6e, 0x79, 0x1a, 0x09, 0x3a, 0x70}},
-		// a05ca6cd-b50c-472a-b5b4-1c2b9367e7ca
-		filters: windows.GUID{Data1: 0xa05ca6cd, Data2: 0xb50c, Data3: 0x472a, Data4: [8]byte{0xb5, 0xb4, 0x1c, 0x2b, 0x93, 0x67, 0xe7, 0xca}},
-	},
-	{
-		// b40cf949-0728-42da-abe5-b7c35964eb64
-		provider: windows.GUID{Data1: 0xb40cf949, Data2: 0x0728, Data3: 0x42da, Data4: [8]byte{0xab, 0xe5, 0xb7, 0xc3, 0x59, 0x64, 0xeb, 0x64}},
-		// bf80dcbf-dcce-487d-806a-b1d052b11eb6
-		filters: windows.GUID{Data1: 0xbf80dcbf, Data2: 0xdcce, Data3: 0x487d, Data4: [8]byte{0x80, 0x6a, 0xb1, 0xd0, 0x52, 0xb1, 0x1e, 0xb6}},
-	},
-}
-
 func createWfpSession() (uintptr, error) {
 	sessionDisplayData, err := createWtFwpmDisplayData0("FreeTurn", "FreeTurn dynamic session")
 	if err != nil {
@@ -61,8 +43,17 @@ func createWfpSession() (uintptr, error) {
 	return sessionHandle, nil
 }
 
-func registerBaseObjects(session uintptr, keys baseObjects) (*baseObjects, error) {
-	bo := &keys
+func registerBaseObjects(session uintptr) (*baseObjects, error) {
+	bo := &baseObjects{}
+	var err error
+	bo.provider, err = windows.GenerateGUID()
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	bo.filters, err = windows.GenerateGUID()
+	if err != nil {
+		return nil, wrapErr(err)
+	}
 
 	//
 	// Register provider.
@@ -107,15 +98,17 @@ func registerBaseObjects(session uintptr, keys baseObjects) (*baseObjects, error
 }
 
 // installSession открывает динамическую сессию и ставит все правила одной транзакцией.
-// Правила живут, пока жива сессия: они исчезают и при падении процесса.
-func installSession(o Options, keys baseObjects) (uintptr, error) {
+// Правила живут, пока жива сессия: они исчезают и при падении процесса. Ключи провайдера
+// и подуровня у каждой сессии свои: ключи WFP уникальны во всей системе, а Update держит
+// старую и новую сессии одновременно.
+func installSession(o Options) (uintptr, error) {
 	session, err := createWfpSession()
 	if err != nil {
 		return 0, wrapErr(err)
 	}
 
 	objectInstaller := func(session uintptr) error {
-		baseObjects, err := registerBaseObjects(session, keys)
+		baseObjects, err := registerBaseObjects(session)
 		if err != nil {
 			return wrapErr(err)
 		}
@@ -142,8 +135,7 @@ func installSession(o Options, keys baseObjects) (uintptr, error) {
 type guard struct {
 	mu           sync.Mutex
 	session      uintptr
-	slot         int // индекс пары sessionKeys, занятой session
-	install      func(o Options, keys baseObjects) (uintptr, error)
+	install      func(o Options) (uintptr, error)
 	closeSession func(session uintptr)
 }
 
@@ -181,18 +173,17 @@ func (g *guard) update(o Options) error {
 	if g.session == 0 {
 		return g.start(o)
 	}
-	next := 1 - g.slot
-	session, err := g.install(o, sessionKeys[next])
+	session, err := g.install(o)
 	if err != nil {
 		return wrapErr(err)
 	}
 	g.closeSession(g.session)
-	g.session, g.slot = session, next
+	g.session = session
 	return nil
 }
 
 func (g *guard) start(o Options) error {
-	session, err := g.install(o, sessionKeys[g.slot])
+	session, err := g.install(o)
 	if err != nil {
 		return wrapErr(err)
 	}

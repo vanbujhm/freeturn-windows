@@ -174,35 +174,21 @@ func TestSubnetConditionsRejectsInvalidPrefix(t *testing.T) {
 	}
 }
 
-func TestSessionKeysAreDistinct(t *testing.T) {
-	seen := map[windows.GUID]bool{{}: true}
-	for _, k := range sessionKeys {
-		for _, g := range []windows.GUID{k.provider, k.filters} {
-			if seen[g] {
-				t.Fatalf("ключ %v нулевой или повторяется", g)
-			}
-			seen[g] = true
-		}
-	}
-}
-
 // fakeEngine подменяет WFP и записывает порядок вызовов.
 type fakeEngine struct {
 	log     []string
 	next    uintptr
 	fail    error
-	keys    []baseObjects
 	options []Options
 }
 
 func (f *fakeEngine) guard() *guard {
 	return &guard{
-		install: func(o Options, keys baseObjects) (uintptr, error) {
+		install: func(o Options) (uintptr, error) {
 			f.log = append(f.log, "install")
 			if f.fail != nil {
 				return 0, f.fail
 			}
-			f.keys = append(f.keys, keys)
 			f.options = append(f.options, o)
 			f.next++
 			return f.next, nil
@@ -256,26 +242,6 @@ func TestUpdateInstallsNewBeforeClosingOld(t *testing.T) {
 	}
 }
 
-// Сессии пересекаются, а ключи WFP уникальны во всей системе: новая обязана брать
-// другую пару, иначе FWP_E_ALREADY_EXISTS и обновление не пройдёт никогда.
-func TestOverlappingSessionsNeverShareKeys(t *testing.T) {
-	f := &fakeEngine{}
-	g := f.guard()
-	if err := g.enable(Options{}); err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		if err := g.update(Options{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 1; i < len(f.keys); i++ {
-		if f.keys[i] == f.keys[i-1] {
-			t.Fatalf("сессии %d и %d с одной парой ключей", i-1, i)
-		}
-	}
-}
-
 func TestUpdateFailureKeepsOldSession(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
@@ -293,13 +259,16 @@ func TestUpdateFailureKeepsOldSession(t *testing.T) {
 		t.Fatalf("старая сессия потеряна: %d", g.session)
 	}
 
-	// После сбоя следующая попытка снова берёт свободную пару.
+	// После сбоя следующая попытка проходит и заменяет старую сессию.
 	f.fail = nil
 	if err := g.update(Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if f.keys[0] == f.keys[1] {
-		t.Fatal("новая сессия взяла пару работающей")
+	if want := []string{"install", "install", "install", "close"}; !slices.Equal(f.log, want) {
+		t.Fatalf("журнал %v, ожидалось %v", f.log, want)
+	}
+	if g.session != 2 {
+		t.Fatalf("сессия %d, ожидалась новая", g.session)
 	}
 }
 
@@ -320,5 +289,38 @@ func TestDisable(t *testing.T) {
 	}
 	if err := g.enable(Options{}); err != nil {
 		t.Fatalf("после отключения включение снова работает: %v", err)
+	}
+}
+
+// Тест идёт вне службы, поэтому без UseProcessUserSID дескриптор не строится.
+// WFP здесь не участвует: дескриптор только собирается в памяти.
+func TestUseProcessUserSID(t *testing.T) {
+	realSID := serviceSID
+	t.Cleanup(func() { serviceSID = realSID })
+
+	if _, err := getCurrentProcessSecurityDescriptor(); !errors.Is(err, windows.ERROR_NO_SUCH_GROUP) {
+		t.Fatalf("вне службы ожидалась ERROR_NO_SUCH_GROUP, получено %v", err)
+	}
+
+	UseProcessUserSID()
+
+	got, err := serviceSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
+		t.Fatal(err)
+	}
+	defer token.Close()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equals(user.User.Sid) {
+		t.Fatalf("SID %v, ожидался SID владельца %v", got, user.User.Sid)
+	}
+	if _, err := getCurrentProcessSecurityDescriptor(); err != nil {
+		t.Fatalf("дескриптор с SID владельца: %v", err)
 	}
 }

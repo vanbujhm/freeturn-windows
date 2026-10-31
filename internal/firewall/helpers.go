@@ -71,9 +71,36 @@ func wrapErr(err error) error {
 	return fmt.Errorf("Firewall error at %s:%d: %w", file, line, err)
 }
 
-// serviceSID даёт SID, к которому привязано разрешение службы. Переменная нужна только
-// тесту с тегом admin: процесс теста не служба и своего SID службы не имеет.
+// serviceSID даёт SID, к которому привязано разрешение службы. По умолчанию это SID
+// службы. Меняют её UseProcessUserSID и тест с тегом admin. Читается при установке правил
+// под current.mu, поэтому менять её в работающей программе можно только под ним же.
 var serviceSID = currentServiceSID
+
+// UseProcessUserSID привязывает разрешение службы к SID владельца текущего процесса.
+// Она нужна при запуске exe в консольном режиме: у консольного процесса нет SID службы,
+// и без этого вызова Enable вернёт ERROR_NO_SUCH_GROUP. Служба её вызывать не должна:
+// у неё разрешение остаётся привязанным к SID службы, это строже, потому что под тем же
+// пользователем может работать другой экземпляр exe. Вызов действует на сессии, созданные
+// после него, поэтому его место до Enable.
+func UseProcessUserSID() {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	serviceSID = processUserSID
+}
+
+func processUserSID() (*windows.SID, error) {
+	var processToken windows.Token
+	err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken)
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	defer processToken.Close()
+	user, err := processToken.GetTokenUser()
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	return user.User.Sid, nil
+}
 
 func currentServiceSID() (*windows.SID, error) {
 	var processToken windows.Token
