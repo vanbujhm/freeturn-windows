@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/ipc/namedpipe"
+	"golang.org/x/sys/windows"
 
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
@@ -39,10 +40,17 @@ type Client struct {
 	closeOnce sync.Once
 }
 
-// Dial подключается к каналу службы. onEvent (может быть nil) вызывается в потоке чтения
+// ServiceOwner возвращает SID LocalSystem: владелец канала установленной службы.
+func ServiceOwner() (*windows.SID, error) {
+	return windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+}
+
+// Dial подключается к каналу службы. Если owner не nil, канал, созданный кем-то другим,
+// отвергается: так чужой экземпляр канала с тем же именем не получит профиль. Окно передаёт
+// ServiceOwner(), nil без проверки нужен тестам и консольному запуску службы. onEvent (может быть nil) вызывается в потоке чтения
 // канала, поэтому не должен блокироваться: пока он занят, ответы на вызовы не приходят.
-func Dial(path string, timeout time.Duration, onEvent func(Event)) (*Client, error) {
-	conn, err := namedpipe.DialTimeout(path, timeout)
+func Dial(path string, timeout time.Duration, owner *windows.SID, onEvent func(Event)) (*Client, error) {
+	conn, err := (&namedpipe.DialConfig{ExpectedOwner: owner}).DialTimeout(path, timeout)
 	if err != nil {
 		return nil, err
 	}

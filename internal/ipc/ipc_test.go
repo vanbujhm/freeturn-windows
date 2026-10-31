@@ -11,8 +11,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/ipc/namedpipe"
+	"golang.org/x/sys/windows"
 
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
@@ -70,10 +72,22 @@ func pipeName(t *testing.T) string {
 	return `\\.\pipe\FreeTurnTest-` + hex.EncodeToString(b[:])
 }
 
+// testSDDL - права для тестов: как у PipeSDDL, но ещё полный доступ текущему пользователю.
+// Под PipeSDDL обычный пользователь не может принять подключение: создавать экземпляры
+// канала ему нельзя, это право есть только у SYSTEM и администраторов.
+func testSDDL(t *testing.T) string {
+	t.Helper()
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;" + u.User.Sid.String() + ")"
+}
+
 func startServer(t *testing.T, h Handler) (*Server, string) {
 	t.Helper()
 	path := pipeName(t)
-	srv, err := Serve(path, PipeSDDL, h)
+	srv, err := Serve(path, testSDDL(t), h)
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -83,7 +97,7 @@ func startServer(t *testing.T, h Handler) (*Server, string) {
 
 func dial(t *testing.T, path string, onEvent func(Event)) *Client {
 	t.Helper()
-	c, err := Dial(path, 2*time.Second, onEvent)
+	c, err := Dial(path, 2*time.Second, nil, onEvent)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -396,7 +410,7 @@ func TestServeSecondInstanceOnSameNameFails(t *testing.T) {
 
 func TestDialMissingPipeTimesOut(t *testing.T) {
 	start := time.Now()
-	if c, err := Dial(pipeName(t), 200*time.Millisecond, nil); err == nil {
+	if c, err := Dial(pipeName(t), 200*time.Millisecond, nil, nil); err == nil {
 		c.Close()
 		t.Fatal("ожидалась ошибка")
 	}
@@ -463,4 +477,114 @@ func TestOutboxResponsesFirstAndBounded(t *testing.T) {
 	if o.pushResponse([]byte("r")) {
 		t.Error("очередь ответов не ограничена")
 	}
+}
+
+// ownerSID возвращает владельца токена текущего процесса: им станет создатель канала.
+func ownerSID(t *testing.T) *windows.SID {
+	t.Helper()
+	tok := windows.GetCurrentProcessToken()
+	var n uint32
+	windows.GetTokenInformation(tok, windows.TokenOwner, nil, 0, &n)
+	buf := make([]byte, n)
+	if err := windows.GetTokenInformation(tok, windows.TokenOwner, &buf[0], n, &n); err != nil {
+		t.Fatal(err)
+	}
+	return (*struct{ Owner *windows.SID })(unsafe.Pointer(&buf[0])).Owner
+}
+
+func TestOwnerAccepted(t *testing.T) {
+	_, path := startServer(t, &stub{})
+	c, err := Dial(path, 2*time.Second, ownerSID(t), nil)
+	if err != nil {
+		t.Fatalf("Dial с верным владельцем: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Status(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnexpectedOwnerRefused(t *testing.T) {
+	_, path := startServer(t, &stub{})
+	system, err := ServiceOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerSID(t).Equals(system) {
+		t.Skip("тест запущен от SYSTEM")
+	}
+	if c, err := Dial(path, 2*time.Second, system, nil); err == nil {
+		c.Close()
+		t.Fatal("канал чужого владельца должен быть отвергнут")
+	}
+}
+
+// createInstance пробует создать ещё один экземпляр канала path, как это сделал бы
+// посторонний процесс. Возвращает ошибку системы.
+func createInstance(path string) error {
+	p16, _ := windows.UTF16PtrFromString(path)
+	h, err := windows.CreateNamedPipe(p16, windows.PIPE_ACCESS_DUPLEX|windows.FILE_FLAG_OVERLAPPED,
+		windows.PIPE_TYPE_BYTE|windows.PIPE_REJECT_REMOTE_CLIENTS, windows.PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, nil)
+	if err == nil {
+		windows.CloseHandle(h)
+	}
+	return err
+}
+
+func TestClientCannotCreateInstance(t *testing.T) {
+	// Тестовый процесс работает от обычного пользователя без повышения: для канала он
+	// только вошедший пользователь (IU), как и любой посторонний процесс.
+	path := pipeName(t)
+	srv, err := Serve(path, PipeSDDL, &stub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if err := createInstance(path); err != windows.ERROR_ACCESS_DENIED {
+		t.Fatalf("экземпляр канала под PipeSDDL: %v, ожидалось ACCESS_DENIED", err)
+	}
+
+	// Контроль: с прежней маской GRGW тот же приём срабатывает, значит тест видит дыру.
+	path = pipeName(t)
+	old, err := Serve(path, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)", &stub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if err := createInstance(path); err != nil {
+		t.Fatalf("с GRGW экземпляр должен создаваться: %v", err)
+	}
+}
+
+func TestPipeSDDLClientCanDial(t *testing.T) {
+	// Права берутся из PipeSDDL, но вместо IU стоит текущий пользователь: так проверка
+	// доступа идёт ровно по маске пользователей (ему не положены SYSTEM и администраторы).
+	// Канал создаём сами с одним экземпляром в состоянии ожидания.
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sddl := strings.Replace(PipeSDDL, ";;;IU)", ";;;"+u.User.Sid.String()+")", 1)
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(*sa))
+	path := pipeName(t)
+	p16, _ := windows.UTF16PtrFromString(path)
+	srvH, err := windows.CreateNamedPipe(p16, windows.PIPE_ACCESS_DUPLEX|windows.FILE_FLAG_OVERLAPPED,
+		windows.PIPE_TYPE_BYTE|windows.PIPE_REJECT_REMOTE_CLIENTS, 4, 4096, 4096, 0, sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(srvH)
+
+	// Клиент библиотеки открывает канал с GENERIC_READ|GENERIC_WRITE: маска без
+	// FILE_APPEND_DATA ему подходит, система не включает это право в общую запись.
+	conn, err := Dial(path, time.Second, nil, nil)
+	if err != nil {
+		t.Fatalf("клиент не прошёл проверку доступа: %v", err)
+	}
+	conn.Close()
 }
