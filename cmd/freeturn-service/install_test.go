@@ -2,12 +2,18 @@ package main
 
 import (
 	"errors"
+	"net/netip"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
+	"github.com/vanbujhm/freeturn-windows/internal/statefile"
 )
 
 func TestServiceConfig(t *testing.T) {
@@ -58,6 +64,83 @@ func TestRecoveryActions(t *testing.T) {
 		if a.Type != mgr.ServiceRestart || a.Delay != want[i] {
 			t.Errorf("действие %d: %+v", i, a)
 		}
+	}
+}
+
+// Start только просит SCM запустить службу, поэтому успех надо дождаться.
+func TestWaitStarted(t *testing.T) {
+	polls := 0
+	err := waitStarted(func() (svc.Status, error) {
+		polls++
+		if polls < 3 {
+			return svc.Status{State: svc.StartPending}, nil
+		}
+		return svc.Status{State: svc.Running}, nil
+	}, time.Minute, time.Millisecond)
+	if err != nil || polls != 3 {
+		t.Fatalf("ошибка %v, опросов %d", err, polls)
+	}
+}
+
+func TestWaitStartedServiceStopped(t *testing.T) {
+	err := waitStarted(func() (svc.Status, error) {
+		return svc.Status{State: svc.Stopped}, nil
+	}, time.Minute, time.Millisecond)
+	if !errors.Is(err, errStartFailed) {
+		t.Fatalf("ошибка %v", err)
+	}
+}
+
+func TestWaitStartedTimeout(t *testing.T) {
+	err := waitStarted(func() (svc.Status, error) {
+		return svc.Status{State: svc.StartPending}, nil
+	}, 20*time.Millisecond, time.Millisecond)
+	if !errors.Is(err, errStartTimeout) {
+		t.Fatalf("ошибка %v", err)
+	}
+}
+
+func TestWaitStartedQueryError(t *testing.T) {
+	failure := errors.New("SCM недоступен")
+	err := waitStarted(func() (svc.Status, error) {
+		return svc.Status{}, failure
+	}, time.Minute, time.Millisecond)
+	if !errors.Is(err, failure) {
+		t.Fatalf("ошибка %v", err)
+	}
+}
+
+// После падения маршруты живут на адаптере, а файл, где они записаны, uninstall сейчас удалит.
+func TestRemoveSavedRoutes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	route := netcfg.BypassRoute{
+		LUID:    7,
+		Prefix:  netip.MustParsePrefix("203.0.113.0/24"),
+		NextHop: netip.MustParseAddr("198.51.100.1"),
+	}
+	if err := statefile.Save(path, statefile.State{Bypass: []netcfg.BypassRoute{route}}); err != nil {
+		t.Fatal(err)
+	}
+	var removed []netcfg.BypassRoute
+	err := removeSavedRoutes(path, func(rs []netcfg.BypassRoute) error {
+		removed = rs
+		return nil
+	})
+	if err != nil || !slices.Equal(removed, []netcfg.BypassRoute{route}) {
+		t.Fatalf("удалено %v, ошибка %v", removed, err)
+	}
+}
+
+func TestRemoveSavedRoutesNoFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	err := removeSavedRoutes(path, func(rs []netcfg.BypassRoute) error {
+		if len(rs) != 0 {
+			t.Errorf("маршруты из ниоткуда: %v", rs)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

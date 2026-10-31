@@ -9,21 +9,31 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 	"golang.zx2c4.com/wintun"
 
+	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
+	"github.com/vanbujhm/freeturn-windows/internal/statefile"
 	"github.com/vanbujhm/freeturn-windows/internal/tunnel"
 )
 
 const (
 	// recoveryResetSeconds - через сколько секунд без падений счётчик падений обнуляется.
 	recoveryResetSeconds = 24 * 60 * 60
+	startTimeout         = 30 * time.Second
 	stopTimeout          = 15 * time.Second
 	stopPoll             = 250 * time.Millisecond
 )
 
-// errStopTimeout: служба не остановилась за отведённое время.
-var errStopTimeout = errors.New("служба не остановилась за 15 секунд")
+var (
+	// errStopTimeout: служба не остановилась за отведённое время.
+	errStopTimeout = errors.New("служба не остановилась за 15 секунд")
+	// errStartFailed: служба завершилась при запуске, причину она пишет в журнал событий.
+	errStartFailed = errors.New("служба не запустилась, причина в журнале событий Windows")
+	// errStartTimeout: служба не сообщила о запуске за отведённое время.
+	errStartTimeout = errors.New("служба не запустилась за 30 секунд")
+)
 
 // serviceConfig - настройки службы. SID службы нужен брандмауэру: разрешение привязано к нему.
 func serviceConfig() mgr.Config {
@@ -55,8 +65,15 @@ func recoveryActions() []mgr.RecoveryAction {
 	}
 }
 
-// install регистрирует службу и запускает её. Если она уже есть, обновляет настройки.
+// install регистрирует службу и запускает её. Если она уже есть, обновляет настройки. Каталог
+// закрывается здесь, с правами установщика: так он готов раньше первого запуска службы, и
+// пользователь не успевает его подбросить.
 func install() error {
+	if _, note, err := prepareDataDir(); err != nil {
+		return err
+	} else if note != "" {
+		fmt.Println(note)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -66,6 +83,10 @@ func install() error {
 		return fmt.Errorf("SCM: %w", err)
 	}
 	defer m.Disconnect()
+
+	if err := registerEventSource(); err != nil {
+		return fmt.Errorf("источник журнала событий: %w", err)
+	}
 
 	s, err := createOrUpdate(m, exe)
 	if err != nil {
@@ -84,7 +105,35 @@ func install() error {
 	if err := s.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
 		return fmt.Errorf("запуск службы: %w", err)
 	}
-	return nil
+	return waitStarted(s.Query, startTimeout, stopPoll)
+}
+
+// registerEventSource регистрирует источник заново: Install считает уже существующий ошибкой, а
+// install запускают и поверх старой установки.
+func registerEventSource() error {
+	_ = eventlog.Remove(serviceName)
+	return eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info)
+}
+
+// waitStarted ждёт, чем кончится запуск: Start только просит SCM начать.
+func waitStarted(query func() (svc.Status, error), timeout, poll time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		st, err := query()
+		if err != nil {
+			return fmt.Errorf("состояние службы: %w", err)
+		}
+		switch st.State {
+		case svc.Running:
+			return nil
+		case svc.Stopped:
+			return errStartFailed
+		}
+		if time.Now().After(deadline) {
+			return errStartTimeout
+		}
+		time.Sleep(poll)
+	}
 }
 
 func createOrUpdate(m *mgr.Mgr, exe string) (*mgr.Service, error) {
@@ -112,7 +161,8 @@ func createOrUpdate(m *mgr.Mgr, exe string) (*mgr.Service, error) {
 
 // uninstall останавливает и удаляет службу, потом убирает следы. Туннель снимает сама служба
 // при остановке. Драйвер трогается только после удаления службы: WintunDeleteDriver не удаляет
-// занятый драйвер, например нужный Amnezia, поэтому его ошибка здесь не важна.
+// занятый драйвер, например нужный Amnezia, поэтому его ошибка здесь не важна. Без wintun.dll
+// остальное всё равно убирается, а ошибка возвращается в конце.
 func uninstall() error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -123,15 +173,35 @@ func uninstall() error {
 	if err := removeService(m); err != nil {
 		return err
 	}
-	// Адаптер остаётся, только если служба упала и больше не запускалась.
-	_ = tunnel.RemoveStale()
-	_ = wintun.Uninstall()
+	_ = eventlog.Remove(serviceName) // источника может и не быть
 
-	p, err := programDataPaths()
+	dllErr := tunnel.CheckDLL()
+	if dllErr == nil {
+		// Адаптер остаётся, только если служба упала и больше не запускалась.
+		_ = tunnel.RemoveStale()
+		_ = wintun.Uninstall()
+	}
+	return errors.Join(dllErr, removeData())
+}
+
+// removeData снимает маршруты и удаляет каталог. Сначала каталог проверяется, как при запуске:
+// список маршрутов из подброшенного файла выполнялся бы с правами администратора.
+func removeData() error {
+	p, _, err := prepareDataDir()
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(p.root)
+	return errors.Join(removeSavedRoutes(p.state, netcfg.RemoveRoutes), os.RemoveAll(p.root))
+}
+
+// removeSavedRoutes снимает маршруты обхода из файла состояния. Они остаются, только если служба
+// упала и больше не запускалась, а другого списка после удаления файла не будет.
+func removeSavedRoutes(path string, remove func([]netcfg.BypassRoute) error) error {
+	s, err := statefile.Load(path)
+	if err != nil {
+		return err
+	}
+	return remove(s.Bypass)
 }
 
 // removeService останавливает службу и удаляет её. Если она не остановилась, удаление

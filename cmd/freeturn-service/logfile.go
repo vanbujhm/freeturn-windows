@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/samosvalishe/free-turn-proxy/mobile"
 )
 
 const (
@@ -212,40 +214,53 @@ func (s *fileSink) close() {
 type serviceLog struct {
 	ring      *ring
 	file      *fileSink
+	echo      *fileSink // экран консоли, nil у службы
 	disk      *rotatingFile
 	broadcast func(line string)
 	now       func() time.Time
 }
 
-// newServiceLog открывает журнал в dir. Если echo не nil, строки идут и туда, в потоке записи
-// на диск: остановленная консоль задерживает только его.
+// newServiceLog открывает журнал в dir. Если echo не nil, строки идут и туда, своим потоком:
+// остановленная консоль не задерживает ни файл, ни поток событий ядра.
 func newServiceLog(dir string, echo io.Writer, broadcast func(string)) *serviceLog {
 	disk := newRotatingFile(dir, logFileLimit)
-	write := disk.write
-	if echo != nil {
-		write = func(line string) error {
-			io.WriteString(echo, line)
-			return disk.write(line)
-		}
-	}
-	return &serviceLog{
+	l := &serviceLog{
 		ring:      newRing(ringLines),
-		file:      newFileSink(write, logQueue),
+		file:      newFileSink(disk.write, logQueue),
 		disk:      disk,
 		broadcast: broadcast,
 		now:       time.Now,
 	}
+	if echo != nil {
+		l.echo = newFileSink(func(line string) error {
+			_, err := io.WriteString(echo, line)
+			return err
+		}, logQueue)
+	}
+	return l
 }
 
+// write разносит строку. Строки debug идут только на экран: Masker знает лишь секреты профиля,
+// а ядро пишет на этом уровне куки и тело запросов капчи. Файл уходит в диагностику, а кольцо
+// и рассылка попадают в окно.
 func (l *serviceLog) write(level, msg string) {
 	line := l.now().Format(time.DateTime) + " [" + level + "] " + msg
+	if l.echo != nil {
+		l.echo.put(line + "\n")
+	}
+	if level == mobile.LevelDebug {
+		return
+	}
 	l.ring.add(line)
 	l.file.put(line + "\n")
 	l.broadcast(line)
 }
 
-// close дописывает очередь и закрывает файл.
+// close дописывает очереди и закрывает файл.
 func (l *serviceLog) close() {
+	if l.echo != nil {
+		l.echo.close()
+	}
 	l.file.close()
 	l.disk.close()
 }

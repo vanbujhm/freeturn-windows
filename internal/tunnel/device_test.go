@@ -1,9 +1,21 @@
 package tunnel
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
+
+// Рядом с тестовым exe нет wintun.dll, поэтому это тот же случай, что и удалённая антивирусом
+// библиотека: понятная ошибка, а не сбой где-то в глубине.
+func TestRemoveStaleWithoutDLL(t *testing.T) {
+	if CheckDLL() == nil {
+		t.Skip("wintun.dll есть в System32")
+	}
+	if err := RemoveStale(); !errors.Is(err, ErrNoWintun) {
+		t.Fatalf("ошибка %v", err)
+	}
+}
 
 func TestParseStats(t *testing.T) {
 	raw := "private_key=00\npublic_key=aa\nlast_handshake_time_sec=1700000000\n" +

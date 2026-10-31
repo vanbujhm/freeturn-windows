@@ -39,7 +39,7 @@ func dispatch(args []string) error {
 		if !isService {
 			return errUsage
 		}
-		return svc.Run(serviceName, &serviceHandler{run: run})
+		return svc.Run(serviceName, &serviceHandler{run: run, report: reportFailure})
 	}
 	switch args[0] {
 	case "install":
@@ -54,8 +54,8 @@ func dispatch(args []string) error {
 
 // console запускает службу в консоли. У такого процесса нет SID службы, и разрешение
 // брандмауэра привязывается к его пользователю. Владельца канала не задаём: повышенный процесс
-// не SYSTEM и задать его не сможет, поэтому freeturnctl подключается без проверки владельца.
-// Пробуждений от SCM здесь нет.
+// не SYSTEM и задать его не сможет, поэтому freeturnctl подключается с флагом -console.
+// Пробуждений от SCM здесь нет. Строки debug идут только на экран, см. serviceLog.write.
 func console(debug bool) error {
 	firewall.UseProcessUserSID()
 

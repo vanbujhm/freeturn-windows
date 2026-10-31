@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,6 +109,8 @@ type fakeTunnel struct {
 	connectErr  error
 	connects    int
 	disconnects int
+	hang        chan struct{} // не nil: Disconnect ждёт его закрытия
+	entered     chan struct{} // получает сигнал при входе в Disconnect
 }
 
 func (f *fakeTunnel) Connect(model.ConnectRequest) error {
@@ -119,22 +122,54 @@ func (f *fakeTunnel) Connect(model.ConnectRequest) error {
 
 func (f *fakeTunnel) Disconnect() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.disconnects++
+	hang, entered := f.hang, f.entered
+	f.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if hang != nil {
+		<-hang
+	}
 }
 
 func (f *fakeTunnel) Status() model.Status { return model.Status{Phase: model.PhaseIdle} }
 
 // stateLog запоминает всё, что служба записала в файл состояния.
 type stateLog struct {
+	mu     sync.Mutex
 	saved  []statefile.State
 	err    error
 	routes []netcfg.BypassRoute // набор, который сейчас стоит в системе
 }
 
 func (s *stateLog) save(st statefile.State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.saved = append(s.saved, st)
 	return s.err
+}
+
+func (s *stateLog) lastSaved(t *testing.T) statefile.State {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.saved) == 0 {
+		t.Fatal("ничего не записано")
+	}
+	return s.saved[len(s.saved)-1]
+}
+
+func (s *stateLog) current() []netcfg.BypassRoute {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.routes
+}
+
+func (s *stateLog) setRoutes(r []netcfg.BypassRoute) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routes = r
 }
 
 func newCommands(tun *fakeTunnel, st *stateLog, logs *logCatcher) *commands {
@@ -144,7 +179,7 @@ func newCommands(tun *fakeTunnel, st *stateLog, logs *logCatcher) *commands {
 		save:    st.save,
 		boot:    func() int64 { return 1000 },
 		logf:    logs.write,
-		applied: func() []netcfg.BypassRoute { return st.routes },
+		applied: st.current,
 	}
 }
 
@@ -384,6 +419,42 @@ func TestSyncBypassKeepsWanted(t *testing.T) {
 	}
 }
 
+// Зависшее отключение не должно оставить признак: следующий запуск вернул бы блокировку.
+func TestClearWantedDuringHungDisconnect(t *testing.T) {
+	tun := &fakeTunnel{hang: make(chan struct{}), entered: make(chan struct{}, 1)}
+	defer close(tun.hang)
+	st := &stateLog{routes: testBypass}
+	c := newCommands(tun, st, &logCatcher{})
+	if err := c.Connect(ksRequest); err != nil {
+		t.Fatal(err)
+	}
+	go c.shutdown()
+	<-tun.entered
+
+	if !within(c.clearWanted, 5*time.Second) {
+		t.Fatal("clearWanted ждёт зависшее отключение")
+	}
+	last := st.lastSaved(t)
+	if last.Wanted || !last.KillSwitch || !slices.Equal(last.Bypass, testBypass) {
+		t.Fatalf("записано %+v", last)
+	}
+}
+
+// Запись маршрутов не ждёт отключения: их снимают как раз сейчас.
+func TestSyncBypassDuringHungDisconnect(t *testing.T) {
+	tun := &fakeTunnel{hang: make(chan struct{}), entered: make(chan struct{}, 1)}
+	defer close(tun.hang)
+	st := &stateLog{}
+	c := newCommands(tun, st, &logCatcher{})
+	go c.Disconnect()
+	<-tun.entered
+
+	st.setRoutes(testBypass)
+	if !within(c.syncBypass, 5*time.Second) {
+		t.Fatal("syncBypass ждёт зависшее отключение")
+	}
+}
+
 func TestCommandsLogsAndStatus(t *testing.T) {
 	c := newCommands(&fakeTunnel{}, &stateLog{}, &logCatcher{})
 	if got := c.Logs(); !slices.Equal(got, []string{"строка"}) {
@@ -580,6 +651,20 @@ func TestServicePipeOwner(t *testing.T) {
 	}
 }
 
+func TestDataDirOwner(t *testing.T) {
+	sd, err := windows.SecurityDescriptorFromString(dataDirSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trustedOwner(owner) {
+		t.Fatalf("каталог службы сам не прошёл бы проверку владельца: %s", owner)
+	}
+}
+
 func TestDataPathsFor(t *testing.T) {
 	p := dataPathsFor(`C:\ProgramData`)
 	want := dataPaths{
@@ -587,42 +672,337 @@ func TestDataPathsFor(t *testing.T) {
 		core:  `C:\ProgramData\FreeTurn\core`,
 		logs:  `C:\ProgramData\FreeTurn\logs`,
 		state: `C:\ProgramData\FreeTurn\state.json`,
+		lock:  `C:\ProgramData\FreeTurn\service.lock`,
 	}
 	if p != want {
 		t.Fatalf("пути %+v", p)
 	}
 }
 
-// Каталог в ProgramData может создать любой пользователь: ссылка вместо него увела бы права
-// и файлы службы в чужое место.
-func TestCheckDirRejectsNonDirectory(t *testing.T) {
-	dir := t.TempDir()
-	if err := checkDir(dir); err != nil {
-		t.Fatalf("каталог: %v", err)
-	}
-	file := filepath.Join(dir, "файл")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkDir(file); err == nil {
-		t.Error("файл принят за каталог")
-	}
-	if err := checkDir(filepath.Join(dir, "нет")); err == nil {
-		t.Error("пустой путь принят")
+func TestTrustedOwner(t *testing.T) {
+	for kind, want := range map[windows.WELL_KNOWN_SID_TYPE]bool{
+		windows.WinLocalSystemSid:           true,
+		windows.WinBuiltinAdministratorsSid: true,
+		windows.WinBuiltinUsersSid:          false,
+		windows.WinAuthenticatedUserSid:     false,
+		windows.WinWorldSid:                 false,
+	} {
+		sid, err := windows.CreateWellKnownSid(kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := trustedOwner(sid); got != want {
+			t.Errorf("%s: %v", sid, got)
+		}
 	}
 }
 
-func TestSingleInstance(t *testing.T) {
-	name := fmt.Sprintf(`Local\FreeTurnServiceTest-%d`, os.Getpid())
-	release, err := singleInstance(name)
+// testPolicy - правила каталога, которые работают без повышения: владельца O:BA обычный
+// пользователь задать не может, поэтому он остаётся владельцем сам. trustUser делает его
+// доверенным, иначе его каталог считается подброшенным.
+func testPolicy(t *testing.T, trustUser bool) dirPolicy {
+	t.Helper()
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := singleInstance(name); err == nil {
-		t.Fatal("второй экземпляр запустился")
+	if token.IsElevated() {
+		t.Skip("нужен запуск без повышения: здесь владелец каталогов администраторы")
+	}
+	return dirPolicy{
+		sddl: "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;" + user.User.Sid.String() + ")",
+		trusted: func(owner *windows.SID) bool {
+			return trustUser && owner.Equals(user.User.Sid)
+		},
+	}
+}
+
+func userACE(t *testing.T) string {
+	t.Helper()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "(A;OICI;FA;;;" + user.User.Sid.String() + ")"
+}
+
+// setDACL ставит каталогу свои права, как сделал бы тот, кто его подбросил.
+func setDACL(t *testing.T, path, sddl string) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const info = windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Fatalf("mklink: %v: %s", err, out)
+	}
+}
+
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("данные"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func wantExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err != nil {
+		t.Errorf("должен остаться: %v", err)
+	}
+}
+
+func wantGone(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s должен исчезнуть: %v", path, err)
+	}
+}
+
+// wantProtected проверяет, что path настоящий каталог с закрытыми правами и наследования нет.
+func wantProtected(t *testing.T, path string) {
+	t.Helper()
+	st, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsDir() {
+		t.Fatalf("%s не каталог: %v", path, st.Mode())
+	}
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		t.Errorf("%s наследует права родителя: %s", path, sd)
+	}
+}
+
+// wantClean проверяет, что отодвинутой копии каталога не осталось ни рядом с ним, ни в рабочем
+// каталоге процесса: переименование коротким именем уводило её туда.
+func wantClean(t *testing.T, root string) {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range []string{root + asideInfix + "*", filepath.Join(cwd, filepath.Base(root)+asideInfix+"*")} {
+		left, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(left) != 0 {
+			t.Errorf("остатки: %v", left)
+		}
+	}
+}
+
+// Объект должен остаться рядом: переименование коротким именем считалось от рабочего каталога,
+// а os.RemoveAll потом молча принимал уже пустой путь.
+func TestRenameBesideStaysInParent(t *testing.T) {
+	base := t.TempDir()
+	from := filepath.Join(base, "старое")
+	if err := os.Mkdir(from, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	to := filepath.Join(base, "новое")
+	if err := renameBeside(from, to); err != nil {
+		t.Fatal(err)
+	}
+	wantExists(t, to)
+	wantGone(t, from)
+}
+
+// Закрытый от всех объект всё равно отодвигается: хватает прав родителя.
+func TestRenameBesideClosedObject(t *testing.T) {
+	base := t.TempDir()
+	from := filepath.Join(base, "закрытое")
+	if err := os.Mkdir(from, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	to := filepath.Join(base, "отодвинутое")
+	full := "D:P" + userACE(t)
+	t.Cleanup(func() {
+		for _, path := range []string{from, to} {
+			if _, err := os.Lstat(path); err == nil {
+				setDACL(t, path, full)
+			}
+		}
+	})
+	setDACL(t, from, "D:P")
+	if err := renameBeside(from, to); err != nil {
+		t.Fatal(err)
+	}
+	wantExists(t, to)
+	wantGone(t, from)
+}
+
+func TestRenameBesideMissing(t *testing.T) {
+	base := t.TempDir()
+	if err := renameBeside(filepath.Join(base, "нет"), filepath.Join(base, "другое")); err == nil {
+		t.Fatal("несуществующий объект переименован")
+	}
+}
+
+func TestSecureFresh(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "FreeTurn")
+	note, err := testPolicy(t, false).secure(root)
+	if err != nil || note != "" {
+		t.Fatalf("заметка %q, ошибка %v", note, err)
+	}
+	wantProtected(t, root)
+}
+
+// Ссылка на месте каталога убирается как ссылка: то, на что она указывает, не трогаем.
+func TestSecureRootJunction(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "чужой")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "важный.txt")
+	writeFile(t, marker)
+	root := filepath.Join(base, "FreeTurn")
+	junction(t, root, target)
+
+	note, err := testPolicy(t, true).secure(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note == "" {
+		t.Error("подмена не отмечена")
+	}
+	wantProtected(t, root)
+	wantExists(t, marker)
+	wantGone(t, filepath.Join(root, "важный.txt"))
+	wantClean(t, root)
+}
+
+func TestSecureFileAtRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "FreeTurn")
+	writeFile(t, root)
+	if _, err := testPolicy(t, true).secure(root); err != nil {
+		t.Fatal(err)
+	}
+	wantProtected(t, root)
+	wantClean(t, root)
+}
+
+// Подброшенный каталог уходит целиком: вложенная папка со своими закрытыми правами осталась бы
+// под управлением пользователя, а его state.json служба прочла бы как свой.
+func TestSecurePlantedTree(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(base, "снаружи")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(outside, "важный.txt")
+	writeFile(t, marker)
+
+	root := filepath.Join(base, "FreeTurn")
+	logs := filepath.Join(root, "logs")
+	if err := os.MkdirAll(logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(root, "state.json")
+	writeFile(t, state)
+	writeFile(t, filepath.Join(logs, "service.log"))
+	setDACL(t, logs, "D:P"+userACE(t))
+	junction(t, filepath.Join(root, "core"), outside)
+
+	note, err := testPolicy(t, false).secure(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note == "" {
+		t.Error("подмена не отмечена")
+	}
+	wantProtected(t, root)
+	wantGone(t, logs)
+	wantGone(t, state)
+	wantGone(t, filepath.Join(root, "core"))
+	wantExists(t, marker)
+	wantClean(t, root)
+}
+
+// Закрыв свой каталог от всех, пользователь не должен останавливать службу: удалить его нельзя,
+// но место освобождается, а остаток безвреден и назван в заметке.
+func TestSecureDeniedTreeMovesAside(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "FreeTurn")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "state.json"))
+	full := "D:P" + userACE(t)
+	t.Cleanup(func() {
+		left, _ := filepath.Glob(root + asideInfix + "*")
+		for _, dir := range left {
+			setDACL(t, dir, full)
+		}
+	})
+	setDACL(t, root, "D:P")
+
+	note, err := testPolicy(t, false).secure(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProtected(t, root)
+	wantGone(t, filepath.Join(root, "state.json"))
+	left, err := filepath.Glob(root + asideInfix + "*")
+	if err != nil || len(left) != 1 {
+		t.Fatalf("остатки %v, ошибка %v", left, err)
+	}
+	if !strings.Contains(note, left[0]) {
+		t.Errorf("остаток не назван: %q", note)
+	}
+}
+
+// Свой каталог только получает права заново, файлы службы в нём остаются.
+func TestSecureTrustedKeepsContents(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "FreeTurn")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(root, "state.json")
+	writeFile(t, state)
+	note, err := testPolicy(t, true).secure(root)
+	if err != nil || note != "" {
+		t.Fatalf("заметка %q, ошибка %v", note, err)
+	}
+	wantProtected(t, root)
+	wantExists(t, state)
+}
+
+func TestLockInstance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.lock")
+	release, err := lockInstance(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockInstance(path); !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("второй экземпляр: %v", err)
 	}
 	release()
-	release, err = singleInstance(name)
+	// Файл остаётся после прошлого запуска и новому запуску не мешает.
+	release, err = lockInstance(path)
 	if err != nil {
 		t.Fatalf("после освобождения: %v", err)
 	}
@@ -631,18 +1011,18 @@ func TestSingleInstance(t *testing.T) {
 
 // Канал может не закрыться: namedpipe теряет сигнал закрытия, если клиент ушёл в тот же момент.
 // Служба из-за этого не должна зависнуть на остановке.
-func TestCloseWithinGivesUpOnHang(t *testing.T) {
+func TestWithinGivesUpOnHang(t *testing.T) {
 	hang := make(chan struct{})
 	defer close(hang)
-	if closeWithin(func() { <-hang }, 10*time.Millisecond) {
-		t.Fatal("зависшее закрытие считается успешным")
+	if within(func() { <-hang }, 10*time.Millisecond) {
+		t.Fatal("зависший вызов считается законченным")
 	}
 }
 
-func TestCloseWithinWaitsForClose(t *testing.T) {
-	closed := false
-	if !closeWithin(func() { closed = true }, time.Minute) || !closed {
-		t.Fatalf("закрыто %v", closed)
+func TestWithinWaitsForCall(t *testing.T) {
+	finished := false
+	if !within(func() { finished = true }, time.Minute) || !finished {
+		t.Fatalf("закончен %v", finished)
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/vanbujhm/freeturn-windows/internal/link"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
@@ -204,6 +206,22 @@ func TestDisconnectAndLogs(t *testing.T) {
 	}
 	if out.String() != "первая\nвторая\n" {
 		t.Fatalf("журнал %q", out.String())
+	}
+}
+
+// connect передаёт ключи, поэтому по умолчанию канал обязан принадлежать службе. Без этого их
+// получил бы тот, кто занял имя канала раньше неё.
+func TestExpectedOwner(t *testing.T) {
+	owner, err := expectedOwner(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner == nil || !owner.IsWellKnown(windows.WinLocalSystemSid) {
+		t.Fatalf("владелец по умолчанию %v", owner)
+	}
+	owner, err = expectedOwner(true)
+	if err != nil || owner != nil {
+		t.Fatalf("-console: владелец %v, ошибка %v", owner, err)
 	}
 }
 

@@ -217,6 +217,49 @@ func TestFileSinkCountsFailedWrites(t *testing.T) {
 	}
 }
 
+// Строки debug несут куки и токены капчи, поэтому им можно только на экран: файл уходит в
+// диагностику, а кольцо и рассылка попадают в окно.
+func TestServiceLogDebugOnlyReachesEcho(t *testing.T) {
+	disk, screen := &recorder{}, &recorder{}
+	var sent []string
+	l := &serviceLog{
+		ring:      newRing(ringLines),
+		file:      newFileSink(disk.write, 16),
+		echo:      newFileSink(screen.write, 16),
+		broadcast: func(line string) { sent = append(sent, line) },
+		now:       time.Now,
+	}
+	l.write("debug", "cookie = значение")
+	l.write("info", "обычная строка")
+	l.file.close()
+	l.echo.close()
+
+	if got := screen.got(); len(got) != 2 {
+		t.Errorf("экран %q", got)
+	}
+	for name, lines := range map[string][]string{"файл": disk.got(), "кольцо": l.ring.last(), "рассылка": sent} {
+		if len(lines) != 1 || strings.Contains(lines[0], "cookie") {
+			t.Errorf("%s: %q", name, lines)
+		}
+	}
+}
+
+// Без экрана строке debug идти некуда.
+func TestServiceLogDebugWithoutEcho(t *testing.T) {
+	disk := &recorder{}
+	l := &serviceLog{
+		ring:      newRing(ringLines),
+		file:      newFileSink(disk.write, 16),
+		broadcast: func(string) { t.Error("строка debug разослана") },
+		now:       time.Now,
+	}
+	l.write("debug", "cookie = значение")
+	l.file.close()
+	if len(disk.got()) != 0 || len(l.ring.last()) != 0 {
+		t.Fatal("строка debug сохранена")
+	}
+}
+
 func TestServiceLogFansOut(t *testing.T) {
 	rec := &recorder{}
 	var sent []string

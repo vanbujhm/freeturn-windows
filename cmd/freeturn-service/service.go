@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"slices"
 
 	"github.com/samosvalishe/free-turn-proxy/mobile"
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/eventlog"
 
 	"github.com/vanbujhm/freeturn-windows/internal/engine"
 	"github.com/vanbujhm/freeturn-windows/internal/firewall"
@@ -20,28 +20,33 @@ import (
 
 const (
 	serviceName = "FreeTurnService"
-	// debugFlag включает строки ядра уровня debug: console -debug или аргумент запуска службы.
+	// debugFlag включает строки ядра уровня debug. Только для console: в них есть куки и токены
+	// капчи, поэтому установленная служба этот аргумент не читает.
 	debugFlag = "-debug"
 	// servicePipeSDDL задаёт владельца канала: окно проверяет, что это ровно LocalSystem.
 	servicePipeSDDL = "O:SY" + ipc.PipeSDDL
 	// pbtResumeAutomatic - событие питания PBT_APMRESUMEAUTOMATIC, система вышла из сна.
 	pbtResumeAutomatic = 0x12
-	// stopWaitHintMs - сколько SCM ждёт остановку: отключение занимает секунды.
-	stopWaitHintMs = 30_000
+	// pendingWaitHintMs - сколько SCM ждёт запуск или остановку, прежде чем счесть службу зависшей.
+	pendingWaitHintMs = 30_000
 	// exitFailure - код выхода при сбое запуска.
 	exitFailure = 1
+	// eventStartFailed - код записи в журнале событий Windows.
+	eventStartFailed = 1
 )
 
-// serviceHandler отвечает SCM. Работу делает run, здесь только перевод команд. run вынесен в
-// поле, чтобы проверять ответы SCM без настоящего запуска.
+// serviceHandler отвечает SCM. Работу делает run, здесь только перевод команд. run и report
+// вынесены в поля, чтобы проверять ответы SCM без настоящего запуска.
 type serviceHandler struct {
-	run func(ctx context.Context, o runOptions) error
+	run    func(ctx context.Context, o runOptions) error
+	report func(msg string) // сбой запуска, журнала службы к этому моменту может не быть
 }
 
 // Execute сам ничего долгого не делает: команды SCM должны получать ответ сразу, поэтому
 // пробуждение уходит сигналом в run. Отмена ctx выполняет Disconnect и сбрасывает признак.
-func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
-	changes <- svc.Status{State: svc.StartPending}
+// Аргументы запуска не читаются: см. debugFlag.
+func (h *serviceHandler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+	changes <- svc.Status{State: svc.StartPending, WaitHint: pendingWaitHintMs}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -51,7 +56,6 @@ func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, chan
 	done := make(chan error, 1)
 	o := runOptions{
 		pipeSDDL: servicePipeSDDL,
-		debug:    len(args) > 1 && slices.Contains(args[1:], debugFlag),
 		wake:     wake,
 		ready:    func() { close(started) },
 	}
@@ -72,6 +76,7 @@ func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, chan
 		case err := <-done:
 			if err != nil {
 				// Код выхода, а не тихий ноль: только так SCM перезапустит службу.
+				h.report("служба не запустилась: " + err.Error())
 				return true, exitFailure
 			}
 			return false, 0
@@ -81,7 +86,7 @@ func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, chan
 				changes <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
 				stopping = true
-				changes <- svc.Status{State: svc.StopPending, WaitHint: stopWaitHintMs}
+				changes <- svc.Status{State: svc.StopPending, WaitHint: pendingWaitHintMs}
 				cancel()
 			case svc.PowerEvent:
 				if c.EventType == pbtResumeAutomatic {
@@ -90,6 +95,17 @@ func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, chan
 			}
 		}
 	}
+}
+
+// reportFailure пишет в журнал событий Windows. Источник регистрирует install. Если записать
+// не вышло, остаётся только код выхода службы.
+func reportFailure(msg string) {
+	events, err := eventlog.Open(serviceName)
+	if err != nil {
+		return
+	}
+	defer events.Close()
+	events.Error(eventStartFailed, msg)
 }
 
 // coreTarget - часть движка, которой нужны события ядра.

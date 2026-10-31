@@ -1,9 +1,12 @@
 // freeturnctl проверяет службу без окна. В установщик не входит.
 //
-//	freeturnctl [-owner-system] status
-//	freeturnctl [-owner-system] connect <файл.json>
-//	freeturnctl [-owner-system] disconnect
-//	freeturnctl [-owner-system] logs
+//	freeturnctl [-console] status
+//	freeturnctl [-console] connect <файл.json>
+//	freeturnctl [-console] disconnect
+//	freeturnctl [-console] logs
+//
+// Без -console канал обязан принадлежать LocalSystem, как у окна. -console нужен для службы,
+// запущенной командой console.
 //
 // Файл подключения хранит ключи и лежит только во временной папке, не в репозитории:
 //
@@ -30,7 +33,7 @@ import (
 
 const dialTimeout = 5 * time.Second
 
-const usage = "использование: freeturnctl [-owner-system] status | connect <файл.json> | disconnect | logs"
+const usage = "использование: freeturnctl [-console] status | connect <файл.json> | disconnect | logs"
 
 // linkCategories - отказы разбора ссылки. Их текст постоянный, а обёртка цитирует ссылку.
 var linkCategories = []error{link.ErrScheme, link.ErrPayload, link.ErrVersion, link.ErrRequired, link.ErrTCPMode}
@@ -141,16 +144,19 @@ func execute(cmd []string, c controller, out io.Writer) error {
 	return errors.New(usage)
 }
 
-// dial подключается к каналу. Службу в консоли создаёт не SYSTEM, поэтому по умолчанию
-// владелец не проверяется. -owner-system проверяет установленную службу как окно.
-func dial(ownerSystem bool) (*ipc.Client, error) {
-	var owner *windows.SID
-	if ownerSystem {
-		sid, err := ipc.ServiceOwner()
-		if err != nil {
-			return nil, err
-		}
-		owner = sid
+// expectedOwner выбирает владельца канала. connect передаёт ключи, поэтому проверка включена
+// всегда, кроме запуска с -console: канал консольной службы создаёт не SYSTEM.
+func expectedOwner(console bool) (*windows.SID, error) {
+	if console {
+		return nil, nil
+	}
+	return ipc.ServiceOwner()
+}
+
+func dial(console bool) (*ipc.Client, error) {
+	owner, err := expectedOwner(console)
+	if err != nil {
+		return nil, err
 	}
 	return ipc.Dial(ipc.PipePath, dialTimeout, owner, nil)
 }
@@ -160,7 +166,7 @@ func main() { os.Exit(cli()) }
 func cli() int {
 	fs := flag.NewFlagSet("freeturnctl", flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
-	ownerSystem := fs.Bool("owner-system", false, "требовать, чтобы владельцем канала был LocalSystem")
+	console := fs.Bool("console", false, "служба запущена командой console, владелец канала не проверяется")
 	fs.Parse(os.Args[1:])
 
 	cmd := fs.Args()
@@ -168,7 +174,7 @@ func cli() int {
 		fs.Usage()
 		return 2
 	}
-	c, err := dial(*ownerSystem)
+	c, err := dial(*console)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "служба недоступна:", err)
 		return 1

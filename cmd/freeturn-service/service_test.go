@@ -146,6 +146,7 @@ type execution struct {
 	r       chan svc.ChangeRequest
 	changes chan svc.Status
 	result  chan [2]uint32 // ssec как 0 или 1 и код выхода
+	report  chan string    // что ушло в журнал событий Windows
 }
 
 func execute(run func(context.Context, runOptions) error, args ...string) *execution {
@@ -153,9 +154,11 @@ func execute(run func(context.Context, runOptions) error, args ...string) *execu
 		r:       make(chan svc.ChangeRequest),
 		changes: make(chan svc.Status, 16),
 		result:  make(chan [2]uint32, 1),
+		report:  make(chan string, 1),
 	}
+	report := func(msg string) { e.report <- msg }
 	go func() {
-		ssec, code := (&serviceHandler{run: run}).Execute(args, e.r, e.changes)
+		ssec, code := (&serviceHandler{run: run, report: report}).Execute(args, e.r, e.changes)
 		out := [2]uint32{0, code}
 		if ssec {
 			out[0] = 1
@@ -195,7 +198,9 @@ func TestExecuteStops(t *testing.T) {
 		f := newFakeRun()
 		e := execute(f.run, serviceName)
 
-		e.wantState(t, svc.StartPending)
+		if st := e.wantState(t, svc.StartPending); st.WaitHint != 30_000 {
+			t.Errorf("запуск: WaitHint = %d", st.WaitHint)
+		}
 		st := e.wantState(t, svc.Running)
 		const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPowerEvent
 		if st.Accepts != accepted {
@@ -212,29 +217,28 @@ func TestExecuteStops(t *testing.T) {
 		default:
 			t.Error("run не дождались")
 		}
+		select {
+		case msg := <-e.report:
+			t.Errorf("обычная остановка попала в журнал событий: %s", msg)
+		default:
+		}
 	}
 }
 
-func TestExecuteOptions(t *testing.T) {
+// Подробный журнал пишет куки и токены, поэтому установленной службе он недоступен, в том числе
+// через sc start: аргументы запуска задаёт любой, кто может запускать службу.
+func TestExecuteIgnoresDebugArgument(t *testing.T) {
 	f := newFakeRun()
 	e := execute(f.run, serviceName, debugFlag)
 	o := <-f.opts
 	if o.pipeSDDL != "O:SY"+ipc.PipeSDDL {
 		t.Errorf("pipeSDDL = %q", o.pipeSDDL)
 	}
-	if !o.debug {
-		t.Error("аргумент запуска -debug потерян")
+	if o.debug {
+		t.Error("-debug из аргументов запуска включил подробный журнал")
 	}
 	e.wantState(t, svc.StartPending)
 	e.wantState(t, svc.Running)
-	e.r <- svc.ChangeRequest{Cmd: svc.Stop}
-	e.wantResult(t)
-
-	f = newFakeRun()
-	e = execute(f.run, serviceName)
-	if o := <-f.opts; o.debug {
-		t.Error("debug включён без аргумента")
-	}
 	e.r <- svc.ChangeRequest{Cmd: svc.Stop}
 	e.wantResult(t)
 }
@@ -280,5 +284,22 @@ func TestExecuteRunFails(t *testing.T) {
 	e.wantState(t, svc.StartPending)
 	if out := e.wantResult(t); out[1] == 0 {
 		t.Fatalf("код выхода %v", out)
+	}
+	// До открытия журнала службы это единственное место, где причина останется.
+	select {
+	case msg := <-e.report:
+		if !strings.Contains(msg, "канал занят") {
+			t.Fatalf("в журнале событий %q", msg)
+		}
+	default:
+		t.Fatal("ошибка запуска не попала в журнал событий")
+	}
+}
+
+// Сумма сроков должна быть меньше подсказки SCM, иначе он решит, что служба зависла.
+func TestStopFitsWaitHint(t *testing.T) {
+	hint := time.Duration(pendingWaitHintMs) * time.Millisecond
+	if stopDeadline+serverCloseLimit >= hint {
+		t.Fatalf("срок %v + %v, подсказка %v", stopDeadline, serverCloseLimit, hint)
 	}
 }

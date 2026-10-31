@@ -23,6 +23,9 @@ import (
 // AdapterName - имя адаптера Wintun в системе.
 const AdapterName = "FreeTurn"
 
+// ErrNoWintun: wintun.dll не загружается, туннель поднять нечем.
+var ErrNoWintun = errors.New("tunnel: нет wintun.dll")
+
 // handshakePollInterval - период опроса времени последнего рукопожатия.
 const handshakePollInterval = 250 * time.Millisecond
 
@@ -127,11 +130,26 @@ func (d *Device) Close() {
 	d.once.Do(d.dev.Close)
 }
 
+// CheckDLL проверяет, что wintun.dll загружается оттуда же, откуда её берёт пакет wintun.
+// Отдельная проверка нужна ради понятной ошибки: файл мог удалить антивирус.
+func CheckDLL() error {
+	const search = windows.LOAD_LIBRARY_SEARCH_APPLICATION_DIR | windows.LOAD_LIBRARY_SEARCH_SYSTEM32
+	h, err := windows.LoadLibraryEx("wintun.dll", 0, search)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNoWintun, err)
+	}
+	windows.FreeLibrary(h)
+	return nil
+}
+
 // RemoveStale убирает адаптер, оставшийся от прошлого запуска. Отсутствие адаптера не ошибка.
 // Закрытие открытого через OpenAdapter дескриптора адаптер не удаляет: Wintun удаляет только
 // адаптер, созданный этим процессом. Поэтому существующий адаптер закрывается, затем создаётся
 // заново (с тем же именем и GUID он переиспользуется) и закрывается, что его удаляет.
 func RemoveStale() error {
+	if err := CheckDLL(); err != nil {
+		return err
+	}
 	old, err := wintun.OpenAdapter(AdapterName)
 	if err != nil {
 		if isNotFound(err) {
