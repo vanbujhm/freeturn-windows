@@ -3,6 +3,7 @@
 package netcfg
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -20,18 +21,28 @@ var testAdapterGUID = windows.GUID{
 	Data4: [8]byte{0x9A, 0x6E, 0x3D, 0x1C, 0x2B, 0x7A, 0x4F, 0x11},
 }
 
-// loadWintun подгружает wintun.dll из репозитория: бинарник теста лежит во временной
-// папке, а wintun ищет библиотеку рядом с exe. Уже загруженный модуль находится по имени.
-func loadWintun(t *testing.T) {
-	t.Helper()
+// TestMain кладёт wintun.dll рядом с exe теста: wintun ищет библиотеку только там,
+// а бинарник теста лежит во временной папке. Нет DLL в third_party - тесты падают, а не пропускаются.
+func TestMain(m *testing.M) {
+	if err := copyWintun(); err != nil {
+		fmt.Fprintln(os.Stderr, "wintun.dll:", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
+func copyWintun() error {
 	_, file, _, _ := runtime.Caller(0)
-	dll := filepath.Join(filepath.Dir(file), "..", "..", "third_party", "wintun", "wintun.dll")
-	if _, err := os.Stat(dll); err != nil {
-		t.Skipf("нет %s (появляется в Task 6): адаптер создать нечем", dll)
+	src := filepath.Join(filepath.Dir(file), "..", "..", "third_party", "wintun", "wintun.dll")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
 	}
-	if _, err := windows.LoadLibrary(dll); err != nil {
-		t.Fatalf("LoadLibrary %s: %v", dll, err)
+	exe, err := os.Executable()
+	if err != nil {
+		return err
 	}
+	return os.WriteFile(filepath.Join(filepath.Dir(exe), "wintun.dll"), data, 0o644)
 }
 
 func hasRoute(t *testing.T, luid uint64, p netip.Prefix) bool {
@@ -51,8 +62,6 @@ func hasRoute(t *testing.T, luid uint64, p netip.Prefix) bool {
 // Маршрут по умолчанию тест не трогает: на проводе меняются только документационные
 // подсети, поэтому согласие на обрыв сети не нужно.
 func TestAdapterRoutesAndBypass(t *testing.T) {
-	loadWintun(t)
-
 	dev, err := tun.CreateTUNWithRequestedGUID("FreeTurnTest", &testAdapterGUID, 1280)
 	if err != nil {
 		t.Fatalf("создание адаптера FreeTurnTest: %v", err)

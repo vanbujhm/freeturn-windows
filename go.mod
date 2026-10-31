@@ -42,7 +42,7 @@ require (
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 )
 
 replace github.com/samosvalishe/free-turn-proxy => github.com/hackdiaz-dev/free-turn-proxy v0.0.0-20261028173317-562cfb4ba18b
