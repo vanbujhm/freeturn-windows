@@ -15,61 +15,65 @@ type Options struct {
 	Bypass   []netip.Prefix
 }
 
-// step один шаг установки правил внутри транзакции.
+// step один шаг установки правил внутри транзакции. install получает сам шаг и берёт вес
+// из него: так тест проверяет те значения, что уходят в WFP.
 type step struct {
-	name    string
-	install func(session uintptr, baseObjects *baseObjects) error
+	name       string
+	weight     uint8 // вес разрешений шага
+	denyWeight uint8 // вес запрета, только у шага dns
+	install    func(s step, session uintptr, bo *baseObjects) error
 }
 
-// buildSteps возвращает шаги в порядке установки. Веса как в wireguard-windows,
-// локальная сеть и исключения идут с весом адаптера.
+// buildSteps возвращает шаги в порядке установки. Веса как в wireguard-windows, локальная
+// сеть и исключения идут с весом адаптера: ниже запрета DNS, чтобы адрес из них не открывал
+// порт 53.
 func buildSteps(o Options) []step {
-	steps := []step{{"service", func(session uintptr, bo *baseObjects) error {
-		return permitService(session, bo, 15)
+	steps := []step{{name: "service", weight: 15, install: func(s step, session uintptr, bo *baseObjects) error {
+		return permitService(session, bo, s.weight)
 	}}}
 
 	if len(o.DNS) > 0 {
-		steps = append(steps, step{"dns", func(session uintptr, bo *baseObjects) error {
-			return blockDNS(o.DNS, session, bo, 15, 14)
+		steps = append(steps, step{name: "dns", weight: 15, denyWeight: 14, install: func(s step, session uintptr, bo *baseObjects) error {
+			return blockDNS(o.DNS, session, bo, s.weight, s.denyWeight)
 		}})
 	}
 
-	steps = append(steps, step{"loopback", func(session uintptr, bo *baseObjects) error {
-		return permitLoopback(session, bo, 13)
+	steps = append(steps, step{name: "loopback", weight: 13, install: func(s step, session uintptr, bo *baseObjects) error {
+		return permitLoopback(session, bo, s.weight)
 	}})
 
 	if o.TunLUID != 0 {
-		steps = append(steps, step{"tun", func(session uintptr, bo *baseObjects) error {
-			return permitTunInterface(session, bo, 12, o.TunLUID)
+		steps = append(steps, step{name: "tun", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+			return permitTunInterface(session, bo, s.weight, o.TunLUID)
 		}})
 	}
 
 	steps = append(steps,
-		step{"dhcp", func(session uintptr, bo *baseObjects) error {
-			if err := permitDHCPIPv4(session, bo, 12); err != nil {
+		step{name: "dhcp", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+			if err := permitDHCPIPv4(session, bo, s.weight); err != nil {
 				return err
 			}
-			return permitDHCPIPv6(session, bo, 12)
+			return permitDHCPIPv6(session, bo, s.weight)
 		}},
-		step{"ndp", func(session uintptr, bo *baseObjects) error {
-			return permitNdp(session, bo, 12)
+		step{name: "ndp", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+			return permitNdp(session, bo, s.weight)
 		}},
 	)
 
 	if o.AllowLAN {
-		steps = append(steps, step{"lan", func(session uintptr, bo *baseObjects) error {
-			return permitSubnets(session, bo, 12, lanPrefixes())
+		steps = append(steps, step{name: "lan", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+			return permitSubnets(session, bo, s.weight, lanPrefixes())
 		}})
 	}
 
 	if len(o.Bypass) > 0 {
-		steps = append(steps, step{"bypass", func(session uintptr, bo *baseObjects) error {
-			return permitSubnets(session, bo, 12, o.Bypass)
+		steps = append(steps, step{name: "bypass", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+			return permitSubnets(session, bo, s.weight, o.Bypass)
 		}})
 	}
 
-	return append(steps, step{"blockAll", func(session uintptr, bo *baseObjects) error {
-		return blockAll(session, bo, 0)
+	return append(steps, step{name: "blockAll", weight: 0, install: func(s step, session uintptr, bo *baseObjects) error {
+		return blockAll(session, bo, s.weight)
 	}})
 }
 

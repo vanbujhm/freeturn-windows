@@ -73,7 +73,7 @@ func wrapErr(err error) error {
 
 // serviceSID даёт SID, к которому привязано разрешение службы. По умолчанию это SID
 // службы. Меняют её UseProcessUserSID и тест с тегом admin. Читается при установке правил
-// под current.mu, поэтому менять её в работающей программе можно только под ним же.
+// под current.installMu, поэтому менять её в работающей программе можно только под ним же.
 var serviceSID = currentServiceSID
 
 // UseProcessUserSID привязывает разрешение службы к SID владельца текущего процесса.
@@ -83,8 +83,8 @@ var serviceSID = currentServiceSID
 // пользователем может работать другой экземпляр exe. Вызов действует на сессии, созданные
 // после него, поэтому его место до Enable.
 func UseProcessUserSID() {
-	current.mu.Lock()
-	defer current.mu.Unlock()
+	current.installMu.Lock()
+	defer current.installMu.Unlock()
 	serviceSID = processUserSID
 }
 

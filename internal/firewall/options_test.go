@@ -5,12 +5,21 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 // Все тесты здесь работают без WFP: блокировку не ставят и прав не требуют.
+
+// allSteps включает все необязательные шаги.
+var allSteps = Options{
+	TunLUID:  7,
+	DNS:      []netip.Addr{netip.MustParseAddr("203.0.113.53")},
+	AllowLAN: true,
+	Bypass:   []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
+}
 
 func stepNames(steps []step) []string {
 	names := make([]string, 0, len(steps))
@@ -45,14 +54,8 @@ func TestBuildPermitsSkipsTunWhenZero(t *testing.T) {
 }
 
 func TestBuildPermitsIncludesBypassAndLAN(t *testing.T) {
-	o := Options{
-		TunLUID:  7,
-		DNS:      []netip.Addr{netip.MustParseAddr("203.0.113.53")},
-		AllowLAN: true,
-		Bypass:   []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
-	}
 	want := []string{"service", "dns", "loopback", "tun", "dhcp", "ndp", "lan", "bypass", "blockAll"}
-	if got := stepNames(buildSteps(o)); !slices.Equal(got, want) {
+	if got := stepNames(buildSteps(allSteps)); !slices.Equal(got, want) {
 		t.Fatalf("шаги %v, ожидалось %v", got, want)
 	}
 }
@@ -76,6 +79,43 @@ func checkCondition(t *testing.T, c wtFwpmFilterCondition0, want wtFwpDataType, 
 	}
 	if c.conditionValue.value != uintptr(value) {
 		t.Fatal("условие указывает не на своё значение")
+	}
+}
+
+func TestStepWeights(t *testing.T) {
+	type weights struct {
+		name         string
+		weight, deny uint8
+	}
+	want := []weights{
+		{"service", 15, 0},
+		{"dns", 15, 14},
+		{"loopback", 13, 0},
+		{"tun", 12, 0},
+		{"dhcp", 12, 0},
+		{"ndp", 12, 0},
+		{"lan", 12, 0},
+		{"bypass", 12, 0},
+		{"blockAll", 0, 0},
+	}
+	var got []weights
+	for _, s := range buildSteps(allSteps) {
+		got = append(got, weights{s.name, s.weight, s.denyWeight})
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("веса %v, ожидалось %v", got, want)
+	}
+}
+
+// Запрет DNS должен стоять выше разрешений подсетей, иначе DNS уйдёт мимо туннеля
+// на любой адрес из локальной сети или исключений.
+func TestLANAndBypassStayBelowDNSDeny(t *testing.T) {
+	steps := buildSteps(allSteps)
+	dns := steps[slices.IndexFunc(steps, func(s step) bool { return s.name == "dns" })]
+	for _, s := range steps {
+		if (s.name == "lan" || s.name == "bypass") && s.weight >= dns.denyWeight {
+			t.Fatalf("%s: вес %d не ниже запрета DNS %d", s.name, s.weight, dns.denyWeight)
+		}
 	}
 }
 
@@ -179,13 +219,18 @@ type fakeEngine struct {
 	log     []string
 	next    uintptr
 	fail    error
+	hold    func() // вызывается внутри install, чтобы задержать установку
 	options []Options
+	closed  []uintptr
 }
 
 func (f *fakeEngine) guard() *guard {
 	return &guard{
 		install: func(o Options) (uintptr, error) {
 			f.log = append(f.log, "install")
+			if f.hold != nil {
+				f.hold()
+			}
 			if f.fail != nil {
 				return 0, f.fail
 			}
@@ -193,7 +238,10 @@ func (f *fakeEngine) guard() *guard {
 			f.next++
 			return f.next, nil
 		},
-		closeSession: func(uintptr) { f.log = append(f.log, "close") },
+		closeSession: func(session uintptr) {
+			f.log = append(f.log, "close")
+			f.closed = append(f.closed, session)
+		},
 	}
 }
 
@@ -240,6 +288,9 @@ func TestUpdateInstallsNewBeforeClosingOld(t *testing.T) {
 	if g.session != 2 {
 		t.Fatalf("сессия %d, ожидалась новая", g.session)
 	}
+	if !slices.Equal(f.closed, []uintptr{1}) {
+		t.Fatalf("закрыты %v, ожидалась старая сессия 1", f.closed)
+	}
 }
 
 func TestUpdateFailureKeepsOldSession(t *testing.T) {
@@ -255,8 +306,8 @@ func TestUpdateFailureKeepsOldSession(t *testing.T) {
 	if want := []string{"install", "install"}; !slices.Equal(f.log, want) {
 		t.Fatalf("журнал %v, ожидалось %v", f.log, want)
 	}
-	if !g.enabled() || g.session != 1 {
-		t.Fatalf("старая сессия потеряна: %d", g.session)
+	if !g.enabled() || g.session != 1 || len(f.closed) != 0 {
+		t.Fatalf("старая сессия потеряна: %d, закрыты %v", g.session, f.closed)
 	}
 
 	// После сбоя следующая попытка проходит и заменяет старую сессию.
@@ -267,8 +318,8 @@ func TestUpdateFailureKeepsOldSession(t *testing.T) {
 	if want := []string{"install", "install", "install", "close"}; !slices.Equal(f.log, want) {
 		t.Fatalf("журнал %v, ожидалось %v", f.log, want)
 	}
-	if g.session != 2 {
-		t.Fatalf("сессия %d, ожидалась новая", g.session)
+	if g.session != 2 || !slices.Equal(f.closed, []uintptr{1}) {
+		t.Fatalf("сессия %d, закрыты %v", g.session, f.closed)
 	}
 }
 
@@ -287,8 +338,85 @@ func TestDisable(t *testing.T) {
 	if g.enabled() || !slices.Equal(f.log, []string{"install", "close"}) {
 		t.Fatalf("журнал %v, enabled %v", f.log, g.enabled())
 	}
+	if !slices.Equal(f.closed, []uintptr{1}) {
+		t.Fatalf("закрыты %v, ожидалась сессия 1", f.closed)
+	}
 	if err := g.enable(Options{}); err != nil {
 		t.Fatalf("после отключения включение снова работает: %v", err)
+	}
+}
+
+// disableWhileStuck задерживает установку, зовёт disable и проверяет, что тот вернулся,
+// не дождавшись её. Возвращает ошибку установки после её завершения.
+func disableWhileStuck(t *testing.T, f *fakeEngine, g *guard, start func() error) error {
+	t.Helper()
+	started, release := make(chan struct{}), make(chan struct{})
+	f.hold = func() {
+		close(started)
+		<-release
+	}
+	result := make(chan error, 1)
+	go func() { result <- start() }()
+	<-started
+
+	disabled := make(chan struct{})
+	go func() {
+		g.disable()
+		close(disabled)
+	}()
+	select {
+	case <-disabled:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Disable ждёт зависшую установку")
+	}
+	if g.enabled() {
+		t.Fatal("после Disable блокировка осталась")
+	}
+
+	close(release)
+	return <-result
+}
+
+func TestDisableDoesNotWaitForStuckEnable(t *testing.T) {
+	f := &fakeEngine{}
+	g := f.guard()
+	err := disableWhileStuck(t, f, g, func() error { return g.enable(Options{}) })
+	if !errors.Is(err, errDisabledDuringInstall) {
+		t.Fatalf("ошибка %v", err)
+	}
+	// Опоздавшая сессия закрывается: кнопка «Отключить» уже нажата.
+	if g.enabled() || !slices.Equal(f.closed, []uintptr{1}) {
+		t.Fatalf("enabled %v, закрыты %v", g.enabled(), f.closed)
+	}
+}
+
+func TestDisableDoesNotWaitForStuckUpdate(t *testing.T) {
+	f := &fakeEngine{}
+	g := f.guard()
+	if err := g.enable(Options{}); err != nil {
+		t.Fatal(err)
+	}
+	err := disableWhileStuck(t, f, g, func() error { return g.update(Options{}) })
+	if !errors.Is(err, errDisabledDuringInstall) {
+		t.Fatalf("ошибка %v", err)
+	}
+	if g.enabled() || !slices.Equal(f.closed, []uintptr{1, 2}) {
+		t.Fatalf("enabled %v, закрыты %v", g.enabled(), f.closed)
+	}
+
+	f.hold = nil
+	if err := g.enable(Options{}); err != nil {
+		t.Fatalf("после отменённой установки включение снова работает: %v", err)
+	}
+}
+
+func TestDisableDuringFailedInstallReturnsInstallError(t *testing.T) {
+	f := &fakeEngine{fail: errors.New("отказ")}
+	g := f.guard()
+	err := disableWhileStuck(t, f, g, func() error { return g.enable(Options{}) })
+	if !errors.Is(err, f.fail) || len(f.closed) != 0 {
+		t.Fatalf("ошибка %v, закрыты %v", err, f.closed)
 	}
 }
 

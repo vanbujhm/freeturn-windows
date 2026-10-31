@@ -15,6 +15,15 @@ import (
 
 type wfpObjectInstaller func(uintptr) error
 
+// txnWaitTimeoutMs ограничивает ожидание начала транзакции. Блокировка транзакций WFP общая
+// на систему, и чужая зависшая транзакция не должна держать нас бесконечно. По истечении
+// срока установка возвращает ошибку.
+const txnWaitTimeoutMs = 5000
+
+// errDisabledDuringInstall возвращают Enable и Update, если Disable пришёл во время
+// установки. Новая сессия к этому моменту уже закрыта.
+var errDisabledDuringInstall = errors.New("firewall: блокировку сняли во время установки")
+
 // Fundamental FreeTurn specific WFP objects.
 type baseObjects struct {
 	provider windows.GUID
@@ -30,7 +39,7 @@ func createWfpSession() (uintptr, error) {
 	session := wtFwpmSession0{
 		displayData:          *sessionDisplayData,
 		flags:                cFWPM_SESSION_FLAG_DYNAMIC,
-		txnWaitTimeoutInMSec: windows.INFINITE,
+		txnWaitTimeoutInMSec: txnWaitTimeoutMs,
 	}
 
 	sessionHandle := uintptr(0)
@@ -113,7 +122,7 @@ func installSession(o Options) (uintptr, error) {
 			return wrapErr(err)
 		}
 		for _, s := range buildSteps(o) {
-			err = s.install(session, baseObjects)
+			err = s.install(s, session, baseObjects)
 			if err != nil {
 				return wrapErr(err)
 			}
@@ -132,9 +141,15 @@ func installSession(o Options) (uintptr, error) {
 
 // guard хранит состояние блокировки. WFP вынесен в поля, чтобы порядок действий
 // проверялся тестами без настоящей блокировки.
+//
+// Установка идёт вне mu: срок txnWaitTimeoutMs покрывает только начало транзакции, а
+// открытие сессии и добавление фильтров им не ограничены. Disable берёт только mu, поэтому
+// установку не ждёт вообще: он повышает epoch, и опоздавшая установка закрывает свою сессию.
 type guard struct {
-	mu           sync.Mutex
+	installMu    sync.Mutex // одна установка за раз
+	mu           sync.Mutex // защищает session и epoch, не держится при вызовах WFP
 	session      uintptr
+	epoch        uint64 // число вызовов Disable
 	install      func(o Options) (uintptr, error)
 	closeSession func(session uintptr)
 }
@@ -159,49 +174,64 @@ func Disable() { current.disable() }
 func Enabled() bool { return current.enabled() }
 
 func (g *guard) enable(o Options) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.session != 0 {
+	g.installMu.Lock()
+	defer g.installMu.Unlock()
+	session, epoch := g.snapshot()
+	if session != 0 {
 		return errors.New("The firewall has already been enabled")
 	}
-	return g.start(o)
+	return g.replace(o, epoch)
 }
 
 func (g *guard) update(o Options) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.session == 0 {
-		return g.start(o)
-	}
-	session, err := g.install(o)
-	if err != nil {
-		return wrapErr(err)
-	}
-	g.closeSession(g.session)
-	g.session = session
-	return nil
+	g.installMu.Lock()
+	defer g.installMu.Unlock()
+	_, epoch := g.snapshot()
+	return g.replace(o, epoch)
 }
 
-func (g *guard) start(o Options) error {
+func (g *guard) snapshot() (session uintptr, epoch uint64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.session, g.epoch
+}
+
+// replace ставит новую сессию и только после успеха закрывает прежнюю, если она была.
+func (g *guard) replace(o Options, epoch uint64) error {
 	session, err := g.install(o)
 	if err != nil {
 		return wrapErr(err)
 	}
+
+	g.mu.Lock()
+	if g.epoch != epoch {
+		g.mu.Unlock()
+		g.closeSession(session)
+		return errDisabledDuringInstall
+	}
+	old := g.session
 	g.session = session
+	g.mu.Unlock()
+
+	if old != 0 {
+		g.closeSession(old)
+	}
 	return nil
 }
 
 func (g *guard) disable() {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.session != 0 {
-		g.closeSession(g.session)
-		g.session = 0
+	g.epoch++
+	session := g.session
+	g.session = 0
+	g.mu.Unlock()
+
+	if session != 0 {
+		g.closeSession(session)
 	}
 }
 
 func (g *guard) enabled() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.session != 0
+	session, _ := g.snapshot()
+	return session != 0
 }
