@@ -1,5 +1,5 @@
 // Package statefile хранит файл состояния службы: признак «туннель нужен», настройки
-// блокировки и время загрузки системы. Секретов в файле нет.
+// блокировки, время загрузки системы и маршруты обхода. Секретов в файле нет.
 package statefile
 
 import (
@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 )
 
 // State - содержимое файла состояния.
@@ -21,6 +23,9 @@ type State struct {
 	KillSwitch, AllowLAN bool
 	// BootUnix - время загрузки системы, секунды Unix, на момент записи.
 	BootUnix int64
+	// Bypass - маршруты обхода на физическом адаптере. Адаптер туннеля уносит свои маршруты с
+	// собой, а эти после падения службы снимает её следующий запуск.
+	Bypass []netcfg.BypassRoute `json:",omitempty"`
 }
 
 // Action - что делать службе после запуска.

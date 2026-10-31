@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,10 @@ func run(ctx context.Context, o runOptions) error {
 	})
 	defer logs.close()
 	logs.write(mobile.LevelInfo, "служба запускается")
+	if o.debug {
+		// Masker знает только секреты профиля, а ядро на этом уровне пишет куки и тело запросов капчи.
+		logs.write(mobile.LevelWarn, "подробный журнал ядра включён: в нём могут быть куки и токены капчи, не передавайте его")
+	}
 
 	if err := tunnel.RemoveStale(); err != nil {
 		logs.write(mobile.LevelWarn, "старый адаптер не удалён: "+err.Error())
@@ -83,18 +88,21 @@ func run(ctx context.Context, o runOptions) error {
 	}
 	save := func(s statefile.State) error { return statefile.Save(paths.state, s) }
 
-	eng := newEngine(paths.core, o.debug, logs, &relay)
-	if err := restore(eng, statefile.Decide(state, statefile.BootUnix()), state, save); err != nil {
+	bypass := make(chan struct{}, 1)
+	eng := newEngine(paths.core, o.debug, logs, &relay, func() { notify(bypass) })
+	state, err = recoverAfterStart(eng, state, statefile.BootUnix(), netcfg.RemoveRoutes, save)
+	if err != nil {
 		logs.write(mobile.LevelError, "состояние после перезапуска не восстановлено: "+err.Error())
 	}
 
 	cmds := &commands{
-		eng:   eng,
-		logs:  logs.ring.last,
-		save:  save,
-		boot:  statefile.BootUnix,
-		logf:  logs.write,
-		state: state,
+		eng:     eng,
+		logs:    logs.ring.last,
+		save:    save,
+		boot:    statefile.BootUnix,
+		logf:    logs.write,
+		applied: netcfg.AppliedBypass,
+		state:   state,
 	}
 	srv, err := ipc.Serve(ipc.PipePath, o.pipeSDDL, cmds)
 	if err != nil {
@@ -104,6 +112,8 @@ func run(ctx context.Context, o runOptions) error {
 	relay.srv.Store(srv)
 
 	loops, stopWatch := startLoops(ctx, eng, o.wake, logs)
+	// Запись идёт на диск со сбросом, поэтому в своём потоке: SetBypass зовут под session.netMu.
+	loops.Go(func() { serial(ctx, bypass, cmds.syncBypass) })
 	if o.ready != nil {
 		o.ready()
 	}
@@ -140,14 +150,15 @@ func closeWithin(fn func(), limit time.Duration) bool {
 
 // newEngine собирает движок из настоящих пакетов. Один Protector стоит и у ядра, и у движка,
 // и у разрешителя доменов: индекс физического интерфейса у них должен быть общий.
-func newEngine(coreDir string, debug bool, logs *serviceLog, relay *eventRelay) *engine.Engine {
+// bypassChanged вызывается после каждой смены набора маршрутов обхода и не должен ждать.
+func newEngine(coreDir string, debug bool, logs *serviceLog, relay *eventRelay, bypassChanged func()) *engine.Engine {
 	prot := protect.New()
 	sink := &coreSink{debug: debug, log: logs.write}
-	host := corehost.New(coreDir, sink, prot)
+	host := corehost.New(coreDir, sink, prot, debug)
 	eng := engine.New(engine.Deps{
 		Core:     host,
 		Tunnels:  sysTunnels{logf: sink.deviceLog},
-		Net:      sysNet{},
+		Net:      sysNet{changed: bypassChanged},
 		FW:       sysFirewall{},
 		Protect:  prot,
 		Resolver: split.NewResolver(prot.Protect),
@@ -269,6 +280,26 @@ func restore(r restorer, action statefile.Action, s statefile.State, save func(s
 	return nil
 }
 
+// recoverAfterStart приводит систему и файл в порядок после прошлого запуска. Маршруты обхода
+// живут на физическом адаптере и переживают падение, поэтому снимаются при любом решении и
+// раньше блокировки. Сбой снятия не отменяет блокировку: она важнее. Возвращает состояние, от
+// которого служба работает дальше.
+func recoverAfterStart(r restorer, s statefile.State, boot int64,
+	remove func([]netcfg.BypassRoute) error, save func(statefile.State) error) (statefile.State, error) {
+	var errs []error
+	if len(s.Bypass) > 0 {
+		errs = append(errs, remove(s.Bypass))
+		s.Bypass = nil
+		errs = append(errs, save(s))
+	}
+	action := statefile.Decide(s, boot)
+	errs = append(errs, restore(r, action, s, save))
+	if action == statefile.ActionClear {
+		s = statefile.State{}
+	}
+	return s, errors.Join(errs...)
+}
+
 // wantedOn - состояние после принятого подключения.
 func wantedOn(o model.Options, boot int64) statefile.State {
 	return statefile.State{Wanted: true, KillSwitch: o.KillSwitch, AllowLAN: o.AllowLAN, BootUnix: boot}
@@ -291,11 +322,12 @@ type tunnelControl interface {
 // поэтому mu держится на всю команду: иначе запись признака могла бы лечь в другом порядке,
 // чем сами команды. Ошибка записи не мешает команде: теряется только восстановление.
 type commands struct {
-	eng  tunnelControl
-	logs func() []string
-	save func(statefile.State) error
-	boot func() int64
-	logf func(level, msg string)
+	eng     tunnelControl
+	logs    func() []string
+	save    func(statefile.State) error
+	boot    func() int64
+	logf    func(level, msg string)
+	applied func() []netcfg.BypassRoute
 
 	mu      sync.Mutex
 	state   statefile.State
@@ -335,7 +367,20 @@ func (c *commands) disconnect() {
 	c.store(wantedOff(c.state))
 }
 
+// syncBypass записывает набор маршрутов обхода, если он изменился. Держит mu, поэтому во время
+// Disconnect ждёт его конца. Это не страшно: маршрут, которого уже нет, запуск после падения
+// просто пропустит.
+func (c *commands) syncBypass() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !slices.Equal(c.state.Bypass, c.applied()) {
+		c.store(c.state)
+	}
+}
+
+// store записывает состояние вместе с текущим набором маршрутов.
 func (c *commands) store(s statefile.State) {
+	s.Bypass = c.applied()
 	c.state = s
 	if err := c.save(s); err != nil {
 		c.logf(mobile.LevelError, "файл состояния не записан: "+err.Error())

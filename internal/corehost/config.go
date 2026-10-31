@@ -16,7 +16,8 @@ import (
 // Так новые поля ядра не ломают сборку, а строгий разбор ядра ловит опечатки в именах.
 // Встроенный туннель ядра не используется: WireGuard поднимает пакет tunnel,
 // поэтому секция tunnel остаётся по умолчанию, routes выключен, режим прокси udp.
-func BuildConfigJSON(p model.Profile, listen netip.AddrPort) (string, error) {
+// debug включает подробный журнал ядра.
+func BuildConfigJSON(p model.Profile, listen netip.AddrPort, debug bool) (string, error) {
 	if !listen.IsValid() {
 		return "", fmt.Errorf("corehost: неверный адрес прослушивания %v", listen)
 	}
@@ -67,6 +68,8 @@ func BuildConfigJSON(p model.Profile, listen netip.AddrPort) (string, error) {
 	if len(p.DNSServers) > 0 {
 		dns["servers"] = p.DNSServers
 	}
+
+	section(cfg, "log")["debug"] = debug
 
 	out, err := json.Marshal(cfg)
 	if err != nil {

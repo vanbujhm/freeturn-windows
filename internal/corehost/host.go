@@ -13,24 +13,30 @@ type Sink = mobile.EventSink
 
 // Host управляет единственной сессией ядра. Состояние ядра глобально,
 // поэтому в процессе живёт один Host.
-type Host struct{}
+type Host struct {
+	debug bool
+}
 
-// New задаёт каталог состояния, приёмник событий и защиту сокетов ядра.
-// Вызывается один раз за процесс.
-func New(stateDir string, sink Sink, protector mobile.Protector) *Host {
+// New задаёт каталог состояния, приёмник событий и защиту сокетов ядра. debug включает строки
+// ядра уровня debug. Вызывается один раз за процесс.
+func New(stateDir string, sink Sink, protector mobile.Protector, debug bool) *Host {
 	mobile.SetStateDir(stateDir)
 	mobile.SetEventSink(sink)
 	mobile.SetProtect(protector)
-	return &Host{}
+	return &Host{debug: debug}
 }
 
 // Start запускает ядро для профиля: UDP-релей слушает listen, WireGuard подключается к нему.
 func (h *Host) Start(p model.Profile, listen netip.AddrPort) error {
-	cfg, err := BuildConfigJSON(p, listen)
+	cfg, err := h.config(p, listen)
 	if err != nil {
 		return err
 	}
 	return mobile.Start(cfg)
+}
+
+func (h *Host) config(p model.Profile, listen netip.AddrPort) (string, error) {
+	return BuildConfigJSON(p, listen, h.debug)
 }
 
 // Stop останавливает ядро и ждёт освобождения ресурсов.

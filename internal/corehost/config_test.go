@@ -40,7 +40,7 @@ func testProfile() model.Profile {
 
 func buildMap(t *testing.T, p model.Profile) map[string]any {
 	t.Helper()
-	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen))
+	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false)
 	if err != nil {
 		t.Fatalf("BuildConfigJSON: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestBuildConfigJSONValid(t *testing.T) {
 		if provider == "direct" {
 			p.CallLink = ""
 		}
-		raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen))
+		raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false)
 		if err != nil {
 			t.Fatalf("%s: BuildConfigJSON: %v", provider, err)
 		}
@@ -170,11 +170,32 @@ func TestBuildConfigKeepsDefaults(t *testing.T) {
 func TestBuildConfigRejectsMissingPeerKeepsError(t *testing.T) {
 	p := testProfile()
 	p.Peer = ""
-	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen))
+	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if mobile.ValidateConfig(raw) == "" {
 		t.Error("пустой peer должен отвергаться ядром")
+	}
+}
+
+// Host передаёт флаг в конфиг, а строгий разбор ядра принимает секцию log.
+func TestHostDebugReachesConfig(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		h := &Host{debug: debug}
+		raw, err := h.config(testProfile(), netip.MustParseAddrPort(testListen))
+		if err != nil {
+			t.Fatalf("config: %v", err)
+		}
+		if msg := mobile.ValidateConfig(raw); msg != "" {
+			t.Fatalf("ядро отвергло конфиг: %s", msg)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		if got := sec(t, m, "log")["debug"]; got != debug {
+			t.Errorf("debug=%v: log.debug = %v", debug, got)
+		}
 	}
 }

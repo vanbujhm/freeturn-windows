@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
+	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
 
 const testSecret = "секрет-из-профиля"
@@ -96,6 +97,25 @@ func TestCoreSinkDebugLines(t *testing.T) {
 	s.OnLog("debug", "подробно "+testSecret, 0)
 	if got := logs.got(); !slices.Equal(got, []string{"debug: подробно ***"}) {
 		t.Fatalf("с debug журнал %q", got)
+	}
+}
+
+// Набор маршрутов меняется только в этих двух вызовах, и файл состояния узнаёт о них отсюда.
+// Пустой набор систему не трогает.
+func TestSysNetReportsBypassChange(t *testing.T) {
+	changes := 0
+	n := sysNet{changed: func() { changes++ }}
+	if err := n.SetBypass(model.Physical{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if changes != 1 {
+		t.Fatalf("после SetBypass сигналов %d", changes)
+	}
+	if err := n.ClearBypass(); err != nil {
+		t.Fatal(err)
+	}
+	if changes != 2 {
+		t.Fatalf("после ClearBypass сигналов %d", changes)
 	}
 }
 

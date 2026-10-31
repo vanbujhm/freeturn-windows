@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
 
@@ -208,7 +210,7 @@ func TestBypassFor(t *testing.T) {
 		Gateway4: netip.MustParseAddr("192.0.2.1"),
 	}
 	got := bypassFor(ph, pfx(t, "203.0.113.0/24", "2001:db8::/32", "203.0.113.0/24", "198.51.100.7/32"))
-	want := []bypassRoute{
+	want := []BypassRoute{
 		{LUID: 7, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: ph.Gateway4},
 		{LUID: 7, Prefix: netip.MustParsePrefix("198.51.100.7/32"), NextHop: ph.Gateway4},
 	}
@@ -231,23 +233,23 @@ func TestBypassFor(t *testing.T) {
 }
 
 func TestDiffBypass(t *testing.T) {
-	a := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
-	b := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("198.51.100.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	a := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	b := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("198.51.100.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
 	// Тот же префикс, но другой шлюз после смены сети: старый удаляется, новый добавляется.
 	a2 := a
 	a2.LUID = 2
 	a2.NextHop = netip.MustParseAddr("192.0.2.254")
 
-	del, add := diffBypass([]bypassRoute{a, b}, []bypassRoute{b, a2})
-	if !slices.Equal(del, []bypassRoute{a}) {
+	del, add := diffBypass([]BypassRoute{a, b}, []BypassRoute{b, a2})
+	if !slices.Equal(del, []BypassRoute{a}) {
 		t.Fatalf("del = %v", del)
 	}
-	if !slices.Equal(add, []bypassRoute{a2}) {
+	if !slices.Equal(add, []BypassRoute{a2}) {
 		t.Fatalf("add = %v", add)
 	}
 
-	del, add = diffBypass(nil, []bypassRoute{a})
-	if len(del) != 0 || !slices.Equal(add, []bypassRoute{a}) {
+	del, add = diffBypass(nil, []BypassRoute{a})
+	if len(del) != 0 || !slices.Equal(add, []BypassRoute{a}) {
 		t.Fatalf("del = %v, add = %v", del, add)
 	}
 }
@@ -304,11 +306,11 @@ func TestIPv6SinkOnly(t *testing.T) {
 }
 
 func TestDropRoutesKeepsFailed(t *testing.T) {
-	a := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
-	b := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("198.51.100.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
-	c := bypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("192.0.2.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
-	applied := []bypassRoute{a, b, c}
-	errs := dropRoutes(&applied, []bypassRoute{a, b}, func(r bypassRoute) error {
+	a := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	b := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("198.51.100.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	c := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("192.0.2.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	applied := []BypassRoute{a, b, c}
+	errs := dropRoutes(&applied, []BypassRoute{a, b}, func(r BypassRoute) error {
 		if r == b {
 			return errors.New("отказ")
 		}
@@ -317,7 +319,69 @@ func TestDropRoutesKeepsFailed(t *testing.T) {
 	if len(errs) != 1 {
 		t.Fatalf("errs = %v", errs)
 	}
-	if !slices.Equal(applied, []bypassRoute{b, c}) {
+	if !slices.Equal(applied, []BypassRoute{b, c}) {
 		t.Fatalf("applied = %v, ожидались b и c: неудалённый маршрут должен остаться", applied)
+	}
+}
+
+func TestRemoveRoutesTriesEveryRoute(t *testing.T) {
+	a := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	b := BypassRoute{LUID: 2, Prefix: netip.MustParsePrefix("198.51.100.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	c := BypassRoute{LUID: 3, Prefix: netip.MustParsePrefix("192.0.2.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	failure := errors.New("отказ")
+
+	var tried []BypassRoute
+	err := removeRoutes([]BypassRoute{a, b, c}, func(r BypassRoute) error {
+		tried = append(tried, r)
+		if r == b {
+			return failure
+		}
+		return nil
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("ошибка %v", err)
+	}
+	if !slices.Equal(tried, []BypassRoute{a, b, c}) {
+		t.Fatalf("сбой остановил удаление: %v", tried)
+	}
+}
+
+func TestRemoveRoutesEmpty(t *testing.T) {
+	if err := RemoveRoutes(nil); err != nil {
+		t.Fatalf("ошибка %v", err)
+	}
+}
+
+// После падения маршрута уже может не быть, а адаптер может исчезнуть вместе с ним.
+func TestDeleteResultToleratesGone(t *testing.T) {
+	r := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	for _, gone := range []error{nil, windows.ERROR_NOT_FOUND, windows.ERROR_FILE_NOT_FOUND} {
+		if err := deleteResult(r, gone); err != nil {
+			t.Errorf("%v: %v", gone, err)
+		}
+	}
+	if err := deleteResult(r, windows.ERROR_ACCESS_DENIED); !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Errorf("отказ потерян: %v", err)
+	}
+}
+
+func TestAppliedBypassIsCopy(t *testing.T) {
+	r := BypassRoute{LUID: 1, Prefix: netip.MustParsePrefix("203.0.113.0/24"), NextHop: netip.MustParseAddr("192.0.2.1")}
+	bypassMu.Lock()
+	bypassApplied = []BypassRoute{r}
+	bypassMu.Unlock()
+	t.Cleanup(func() {
+		bypassMu.Lock()
+		defer bypassMu.Unlock()
+		bypassApplied = nil
+	})
+
+	got := AppliedBypass()
+	if !slices.Equal(got, []BypassRoute{r}) {
+		t.Fatalf("набор %v", got)
+	}
+	got[0].LUID = 2
+	if again := AppliedBypass(); again[0] != r {
+		t.Fatal("вызывающий испортил набор")
 	}
 }

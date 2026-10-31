@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,7 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/engine"
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
+	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 	"github.com/vanbujhm/freeturn-windows/internal/statefile"
 )
 
@@ -80,7 +83,7 @@ func TestRestore(t *testing.T) {
 			if r.awaiting != tt.awaiting {
 				t.Errorf("AwaitProfile %d раз", r.awaiting)
 			}
-			if tt.cleared != (len(written) == 1 && written[0] == statefile.State{}) {
+			if tt.cleared != (len(written) == 1 && reflect.DeepEqual(written[0], statefile.State{})) {
 				t.Errorf("записано %+v", written)
 			}
 		})
@@ -90,11 +93,11 @@ func TestRestore(t *testing.T) {
 func TestWantedTransitions(t *testing.T) {
 	on := wantedOn(model.Options{KillSwitch: true, AllowLAN: true}, 1000)
 	want := statefile.State{Wanted: true, KillSwitch: true, AllowLAN: true, BootUnix: 1000}
-	if on != want {
+	if !reflect.DeepEqual(on, want) {
 		t.Errorf("wantedOn = %+v", on)
 	}
 	want.Wanted = false
-	if off := wantedOff(on); off != want {
+	if off := wantedOff(on); !reflect.DeepEqual(off, want) {
 		t.Errorf("wantedOff = %+v", off)
 	}
 }
@@ -124,8 +127,9 @@ func (f *fakeTunnel) Status() model.Status { return model.Status{Phase: model.Ph
 
 // stateLog запоминает всё, что служба записала в файл состояния.
 type stateLog struct {
-	saved []statefile.State
-	err   error
+	saved  []statefile.State
+	err    error
+	routes []netcfg.BypassRoute // набор, который сейчас стоит в системе
 }
 
 func (s *stateLog) save(st statefile.State) error {
@@ -135,11 +139,12 @@ func (s *stateLog) save(st statefile.State) error {
 
 func newCommands(tun *fakeTunnel, st *stateLog, logs *logCatcher) *commands {
 	return &commands{
-		eng:  tun,
-		logs: func() []string { return []string{"строка"} },
-		save: st.save,
-		boot: func() int64 { return 1000 },
-		logf: logs.write,
+		eng:     tun,
+		logs:    func() []string { return []string{"строка"} },
+		save:    st.save,
+		boot:    func() int64 { return 1000 },
+		logf:    logs.write,
+		applied: func() []netcfg.BypassRoute { return st.routes },
 	}
 }
 
@@ -152,7 +157,7 @@ func TestCommandsConnectSavesWanted(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []statefile.State{{Wanted: true, KillSwitch: true, AllowLAN: true, BootUnix: 1000}}
-	if !slices.Equal(st.saved, want) {
+	if !reflect.DeepEqual(st.saved, want) {
 		t.Fatalf("записано %+v", st.saved)
 	}
 }
@@ -180,7 +185,7 @@ func TestCommandsDisconnectClearsWanted(t *testing.T) {
 		t.Fatalf("Disconnect %d раз", tun.disconnects)
 	}
 	last := st.saved[len(st.saved)-1]
-	if last != (statefile.State{KillSwitch: true, AllowLAN: true, BootUnix: 1000}) {
+	if !reflect.DeepEqual(last, statefile.State{KillSwitch: true, AllowLAN: true, BootUnix: 1000}) {
 		t.Fatalf("после отключения %+v", last)
 	}
 }
@@ -191,7 +196,7 @@ func TestCommandsDisconnectAfterRestart(t *testing.T) {
 	c := newCommands(tun, st, &logCatcher{})
 	c.state = statefile.State{Wanted: true, KillSwitch: true, BootUnix: 900}
 	c.Disconnect()
-	if want := (statefile.State{KillSwitch: true, BootUnix: 900}); st.saved[0] != want {
+	if want := (statefile.State{KillSwitch: true, BootUnix: 900}); !reflect.DeepEqual(st.saved[0], want) {
 		t.Fatalf("записано %+v", st.saved[0])
 	}
 }
@@ -225,6 +230,157 @@ func TestCommandsShutdown(t *testing.T) {
 	}
 	if tun.connects != 1 {
 		t.Fatalf("Connect дошёл до движка %d раз", tun.connects)
+	}
+}
+
+var testBypass = []netcfg.BypassRoute{{
+	LUID:    7,
+	Prefix:  netip.MustParsePrefix("203.0.113.0/24"),
+	NextHop: netip.MustParseAddr("198.51.100.1"),
+}}
+
+// recovery записывает порядок шагов восстановления.
+type recovery struct {
+	list      []string
+	saved     []statefile.State
+	removeErr error
+}
+
+func (r *recovery) ArmBlock(model.Options) error {
+	r.list = append(r.list, "block")
+	return nil
+}
+
+func (r *recovery) AwaitProfile() { r.list = append(r.list, "await") }
+
+func (r *recovery) remove(rs []netcfg.BypassRoute) error {
+	r.list = append(r.list, "remove")
+	if !slices.Equal(rs, testBypass) {
+		panic("сняты не те маршруты")
+	}
+	return r.removeErr
+}
+
+func (r *recovery) save(s statefile.State) error {
+	r.list = append(r.list, "save")
+	r.saved = append(r.saved, s)
+	return nil
+}
+
+// Маршруты снимаются при любом решении и раньше блокировки.
+func TestRecoverRemovesRoutesFirst(t *testing.T) {
+	const boot = 1000
+	tests := []struct {
+		name  string
+		state statefile.State
+		boot  int64
+		order []string
+	}{
+		{"туннель не нужен", statefile.State{BootUnix: boot}, boot, []string{"remove", "save"}},
+		{"блокировка", statefile.State{Wanted: true, KillSwitch: true, BootUnix: boot}, boot,
+			[]string{"remove", "save", "block"}},
+		{"ждём профиль", statefile.State{Wanted: true, BootUnix: boot}, boot,
+			[]string{"remove", "save", "await"}},
+		{"другая загрузка", statefile.State{Wanted: true, BootUnix: boot}, boot + 3600,
+			[]string{"remove", "save", "save"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := tt.state
+			s.Bypass = testBypass
+			r := &recovery{}
+			got, err := recoverAfterStart(r, s, tt.boot, r.remove, r.save)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(r.list, tt.order) {
+				t.Fatalf("порядок %v", r.list)
+			}
+			if r.saved[0].Bypass != nil || r.saved[0].Wanted != s.Wanted {
+				t.Errorf("первая запись %+v", r.saved[0])
+			}
+			if got.Bypass != nil {
+				t.Errorf("поле не очищено: %+v", got)
+			}
+		})
+	}
+}
+
+func TestRecoverWithoutRoutesRemovesNothing(t *testing.T) {
+	r := &recovery{}
+	s := statefile.State{Wanted: true, BootUnix: 1000}
+	if _, err := recoverAfterStart(r, s, 1000, r.remove, r.save); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.list, []string{"await"}) {
+		t.Fatalf("порядок %v", r.list)
+	}
+}
+
+// Сбой снятия маршрутов не должен оставить человека без блокировки.
+func TestRecoverContinuesAfterRemoveError(t *testing.T) {
+	failure := errors.New("отказ")
+	r := &recovery{removeErr: failure}
+	s := statefile.State{Wanted: true, KillSwitch: true, BootUnix: 1000, Bypass: testBypass}
+	got, err := recoverAfterStart(r, s, 1000, r.remove, r.save)
+	if !errors.Is(err, failure) {
+		t.Fatalf("ошибка %v", err)
+	}
+	if !slices.Equal(r.list, []string{"remove", "save", "block"}) || got.Bypass != nil {
+		t.Fatalf("порядок %v, состояние %+v", r.list, got)
+	}
+}
+
+// Устаревший признак не должен вернуться в файл со следующей записью маршрутов.
+func TestRecoverOtherBootForgetsWanted(t *testing.T) {
+	r := &recovery{}
+	s := statefile.State{Wanted: true, KillSwitch: true, BootUnix: 1000}
+	got, err := recoverAfterStart(r, s, 5000, r.remove, r.save)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, statefile.State{}) {
+		t.Fatalf("состояние %+v", got)
+	}
+}
+
+func TestCommandsSaveApplied(t *testing.T) {
+	tun, st := &fakeTunnel{}, &stateLog{routes: testBypass}
+	c := newCommands(tun, st, &logCatcher{})
+	if err := c.Connect(ksRequest); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(st.saved[0].Bypass, testBypass) {
+		t.Fatalf("после подключения %+v", st.saved[0])
+	}
+
+	// Маршрут, который не снялся, остаётся в файле: его снимет следующий запуск.
+	c.Disconnect()
+	last := st.saved[len(st.saved)-1]
+	if last.Wanted || !slices.Equal(last.Bypass, testBypass) {
+		t.Fatalf("после отключения %+v", last)
+	}
+}
+
+func TestSyncBypassKeepsWanted(t *testing.T) {
+	tun, st := &fakeTunnel{}, &stateLog{}
+	c := newCommands(tun, st, &logCatcher{})
+	if err := c.Connect(ksRequest); err != nil {
+		t.Fatal(err)
+	}
+	st.saved = nil
+
+	st.routes = testBypass
+	c.syncBypass()
+	if len(st.saved) != 1 || !st.saved[0].Wanted || !st.saved[0].KillSwitch ||
+		!slices.Equal(st.saved[0].Bypass, testBypass) {
+		t.Fatalf("записано %+v", st.saved)
+	}
+
+	// Без перемен файл не трогаем: сигнал приходит и тогда, когда набор остался прежним.
+	c.syncBypass()
+	if len(st.saved) != 1 {
+		t.Fatalf("лишняя запись %+v", st.saved)
 	}
 }
 

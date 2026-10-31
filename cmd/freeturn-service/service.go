@@ -129,8 +129,11 @@ func (s *coreSink) deviceLog(format string, args ...any) {
 	s.log(mobile.LevelError, s.target.MaskLog(fmt.Sprintf(format, args...)))
 }
 
-// sysNet закрывает engine.Network функциями netcfg.
-type sysNet struct{}
+// sysNet закрывает engine.Network функциями netcfg. changed вызывается после каждой смены
+// набора маршрутов обхода, и при ошибке тоже: часть маршрутов могла встать.
+type sysNet struct {
+	changed func()
+}
 
 func (sysNet) FindPhysical(exclude uint64) (model.Physical, error) {
 	return netcfg.FindPhysical(exclude)
@@ -146,11 +149,17 @@ func (sysNet) ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip
 
 func (sysNet) ClearTunnel(luid uint64) error { return netcfg.ClearTunnel(luid) }
 
-func (sysNet) SetBypass(ph model.Physical, p []netip.Prefix) error {
-	return netcfg.SetBypass(ph, p)
+func (n sysNet) SetBypass(ph model.Physical, p []netip.Prefix) error {
+	err := netcfg.SetBypass(ph, p)
+	n.changed()
+	return err
 }
 
-func (sysNet) ClearBypass() error { return netcfg.ClearBypass() }
+func (n sysNet) ClearBypass() error {
+	err := netcfg.ClearBypass()
+	n.changed()
+	return err
+}
 
 func (sysNet) OtherTunnel(exclude uint64) (string, bool) { return netcfg.OtherTunnel(exclude) }
 

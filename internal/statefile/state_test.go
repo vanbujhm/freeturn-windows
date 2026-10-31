@@ -1,9 +1,14 @@
 package statefile
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 )
 
 const boot = int64(1_800_000_000)
@@ -52,7 +57,7 @@ func TestDecideNotWanted(t *testing.T) {
 
 func TestLoadMissingFile(t *testing.T) {
 	s, err := Load(filepath.Join(t.TempDir(), "state.json"))
-	if err != nil || s != (State{}) {
+	if err != nil || !reflect.DeepEqual(s, State{}) {
 		t.Errorf("got %+v, %v", s, err)
 	}
 }
@@ -64,7 +69,7 @@ func TestLoadCorrupt(t *testing.T) {
 			t.Fatal(err)
 		}
 		s, err := Load(path)
-		if err != nil || s != (State{}) {
+		if err != nil || !reflect.DeepEqual(s, State{}) {
 			t.Errorf("body %q: got %+v, %v", body, s, err)
 		}
 	}
@@ -77,7 +82,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := Load(path)
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 	// Повторная запись заменяет файл.
@@ -85,8 +90,59 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err := Save(path, want); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := Load(path); got != want {
+	if got, _ := Load(path); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v", got)
+	}
+}
+
+// Маршруты обхода переживают падение службы, поэтому их снимает уже следующий запуск.
+func TestBypassRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	want := State{
+		Wanted: true, BootUnix: boot,
+		Bypass: []netcfg.BypassRoute{
+			{
+				LUID:    0xF00D000000000001, // старшие биты теряются, если число пройдёт через float64
+				Prefix:  netip.MustParsePrefix("203.0.113.0/24"),
+				NextHop: netip.MustParseAddr("198.51.100.1"),
+			},
+			{
+				LUID:    2,
+				Prefix:  netip.MustParsePrefix("2001:db8::/32"),
+				NextHop: netip.MustParseAddr("fe80::1"),
+			},
+			{
+				LUID:    3,
+				Prefix:  netip.MustParsePrefix("198.51.100.7/32"),
+				NextHop: netip.IPv4Unspecified(),
+			},
+		},
+	}
+	if err := Save(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "203.0.113.0/24") {
+		t.Errorf("адреса не текстом: %s", data)
+	}
+}
+
+// Файл, записанный до появления поля, остаётся годным.
+func TestLoadFileWithoutBypass(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"Wanted":true,"BootUnix":1800000000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil || !got.Wanted || got.BootUnix != boot || got.Bypass != nil {
+		t.Fatalf("got %+v, %v", got, err)
 	}
 }
 

@@ -177,8 +177,9 @@ func ClearTunnel(luid uint64) error {
 	return errors.Join(errs...)
 }
 
-// bypassRoute — маршрут обхода через физический интерфейс.
-type bypassRoute struct {
+// BypassRoute — маршрут обхода через физический интерфейс. Секретов нет, служба хранит такие
+// маршруты в файле состояния.
+type BypassRoute struct {
 	LUID    uint64
 	Prefix  netip.Prefix
 	NextHop netip.Addr
@@ -186,8 +187,8 @@ type bypassRoute struct {
 
 // bypassFor строит маршруты обхода через физический шлюз. Нулевой Gateway4 значит
 // прямой интерфейс: следующий узел 0.0.0.0. IPv6 без Gateway6 пропускается.
-func bypassFor(ph model.Physical, prefixes []netip.Prefix) []bypassRoute {
-	var out []bypassRoute
+func bypassFor(ph model.Physical, prefixes []netip.Prefix) []BypassRoute {
+	var out []BypassRoute
 	for _, p := range prefixes {
 		if !p.IsValid() {
 			continue
@@ -205,7 +206,7 @@ func bypassFor(ph model.Physical, prefixes []netip.Prefix) []bypassRoute {
 				continue
 			}
 		}
-		r := bypassRoute{LUID: ph.LUID, Prefix: p, NextHop: nh}
+		r := BypassRoute{LUID: ph.LUID, Prefix: p, NextHop: nh}
 		if !slices.Contains(out, r) {
 			out = append(out, r)
 		}
@@ -214,7 +215,7 @@ func bypassFor(ph model.Physical, prefixes []netip.Prefix) []bypassRoute {
 }
 
 // diffBypass возвращает маршруты, которые надо удалить и добавить, чтобы перейти от old к want.
-func diffBypass(old, want []bypassRoute) (del, add []bypassRoute) {
+func diffBypass(old, want []BypassRoute) (del, add []BypassRoute) {
 	for _, r := range old {
 		if !slices.Contains(want, r) {
 			del = append(del, r)
@@ -232,7 +233,7 @@ func diffBypass(old, want []bypassRoute) (del, add []bypassRoute) {
 // и чтобы ClearBypass знал, что удалять.
 var (
 	bypassMu      sync.Mutex
-	bypassApplied []bypassRoute
+	bypassApplied []BypassRoute
 )
 
 // SetBypass заменяет набор маршрутов обхода: лишние прошлые удаляются, новые добавляются.
@@ -270,23 +271,53 @@ func ClearBypass() error {
 // dropRoutes удаляет маршруты через rm и убирает из applied только удалённые.
 // Маршрут, который не удалось удалить, остаётся в списке: его повторят при следующем вызове,
 // а не потеряют навсегда.
-func dropRoutes(applied *[]bypassRoute, del []bypassRoute, rm func(bypassRoute) error) []error {
+func dropRoutes(applied *[]BypassRoute, del []BypassRoute, rm func(BypassRoute) error) []error {
 	var errs []error
 	for _, r := range del {
 		if err := rm(r); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		*applied = slices.DeleteFunc(*applied, func(x bypassRoute) bool { return x == r })
+		*applied = slices.DeleteFunc(*applied, func(x BypassRoute) bool { return x == r })
 	}
 	return errs
 }
 
-// deleteRoute удаляет маршрут; если его уже нет, это не ошибка.
-func deleteRoute(r bypassRoute) error {
-	err := winipcfg.LUID(r.LUID).DeleteRoute(r.Prefix, r.NextHop)
-	if err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
-		return fmt.Errorf("удаление обхода %s: %w", r.Prefix, err)
+// AppliedBypass возвращает копию текущего набора маршрутов обхода. Служба хранит его в файле
+// состояния: маршруты живут на физическом адаптере и переживают её падение.
+func AppliedBypass() []BypassRoute {
+	bypassMu.Lock()
+	defer bypassMu.Unlock()
+	return slices.Clone(bypassApplied)
+}
+
+// RemoveRoutes удаляет маршруты, оставшиеся от прошлого запуска. Маршрута или адаптера уже
+// может не быть, это не ошибка. Сбой одного маршрута не прерывает остальные, ошибки
+// возвращаются вместе.
+func RemoveRoutes(rs []BypassRoute) error {
+	return removeRoutes(rs, deleteRoute)
+}
+
+func removeRoutes(rs []BypassRoute, rm func(BypassRoute) error) error {
+	var errs []error
+	for _, r := range rs {
+		if err := rm(r); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// deleteRoute удаляет маршрут; если его уже нет, это не ошибка.
+func deleteRoute(r BypassRoute) error {
+	return deleteResult(r, winipcfg.LUID(r.LUID).DeleteRoute(r.Prefix, r.NextHop))
+}
+
+// deleteResult разбирает ответ системы. ERROR_NOT_FOUND: маршрута нет, ERROR_FILE_NOT_FOUND:
+// нет интерфейса, например адаптер сняли, пока служба лежала.
+func deleteResult(r BypassRoute, err error) error {
+	if err == nil || errors.Is(err, windows.ERROR_NOT_FOUND) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		return nil
+	}
+	return fmt.Errorf("удаление обхода %s: %w", r.Prefix, err)
 }
