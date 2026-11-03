@@ -5,6 +5,7 @@
 # Результат: build\FreeTurn.exe, build\FreeTurnService.exe, build\wintun.dll и
 # dist\FreeTurnSetup-<версия>.exe. С -SkipInstaller сборка останавливается после build\,
 # Inno Setup для этого не нужен.
+#requires -Version 7
 param(
     [Parameter(Mandatory = $true)]
     [string]$Version,

@@ -1,4 +1,5 @@
 ﻿# Запускает все проверки: go vet, go test и тесты интерфейса. Останавливается на первой ошибке.
+#requires -Version 7
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $env:CGO_ENABLED = '0'

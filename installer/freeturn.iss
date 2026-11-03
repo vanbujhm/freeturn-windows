@@ -61,7 +61,6 @@ Name: "{group}\FreeTurn"; Filename: "{app}\FreeTurn.exe"
 Name: "{autodesktop}\FreeTurn"; Filename: "{app}\FreeTurn.exe"
 
 [Run]
-Filename: "{app}\{#WebView2Setup}"; Parameters: "/silent /install"; StatusMsg: "Установка WebView2..."; Flags: waituntilterminated runhidden; Check: not CheckWebView2
 Filename: "{app}\FreeTurn.exe"; Description: "Запустить FreeTurn"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [Code]
@@ -84,24 +83,80 @@ begin
      (Version <> '') and (Version <> '0.0.0.0'));
 end;
 
-// StopFreeTurn закрывает окно и останавливает службу. Остановка службы снимает туннель,
-// адаптер и правила брандмауэра. Ошибки не важны: окна или службы может и не быть.
-procedure StopFreeTurn;
+// ServiceStopped сообщает, что службы FreeTurnService нет или она остановлена. Вывод sc query
+// Exec не отдаёт, поэтому он идёт во временный файл. Код 1060 значит, что службы нет.
+function ServiceStopped: Boolean;
 var
   ResultCode: Integer;
+  OutFile: String;
+  Output: AnsiString;
+begin
+  Result := False;
+  OutFile := ExpandConstant('{tmp}\freeturn-sc.txt');
+  DeleteFile(OutFile);
+  if not Exec(ExpandConstant('{cmd}'), '/c sc query FreeTurnService > "' + OutFile + '" 2>&1', '',
+              SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Exit;
+  if ResultCode = 1060 then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if LoadStringFromFile(OutFile, Output) then
+    Result := Pos('STOPPED', Output) > 0;
+end;
+
+// StopFreeTurn закрывает окно и останавливает службу. Остановка службы снимает туннель,
+// адаптер и правила брандмауэра. Окна может и не быть, а вот служба должна остановиться: иначе
+// её файлы заняты. Ждём до 35 секунд, столько служба сама отводит на остановку.
+function StopFreeTurn: Boolean;
+var
+  ResultCode, I: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM FreeTurn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\net.exe'), 'stop FreeTurnService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ServiceStopped;
+  for I := 1 to 70 do
+  begin
+    if Result then
+      Break;
+    Sleep(500);
+    Result := ServiceStopped;
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopFreeTurn;
   Result := '';
+  if not StopFreeTurn then
+  begin
+    Log('Служба FreeTurnService не остановилась за 35 секунд');
+    Result := 'Не удалось остановить службу FreeTurn. Закройте программу, подождите минуту и запустите установку ещё раз. ' +
+      'Если не помогло, перезагрузите компьютер.';
+  end;
+end;
+
+// RunWebView2 ставит WebView2 Runtime загрузчиком Microsoft. Он берёт файлы из интернета.
+procedure RunWebView2;
+var
+  ResultCode: Integer;
+begin
+  if CheckWebView2 then
+    Exit;
+  WizardForm.StatusLabel.Caption := 'Установка WebView2...';
+  if not Exec(ExpandConstant('{app}\{#WebView2Setup}'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('Загрузчик WebView2 не запустился')
+  else
+    Log('Загрузчик WebView2 завершился с кодом ' + IntToStr(ResultCode));
+  if not CheckWebView2 then
+    SuppressibleMsgBox(
+      'Для окна FreeTurn нужен Microsoft Edge WebView2 Runtime, а установить его не удалось: ' +
+      'загрузчику нужен доступ в интернет. Подключитесь к интернету и запустите установку ещё раз.',
+      mbError, MB_OK, IDOK);
 end;
 
 // Регистрацию службы нельзя отдать разделу [Run]: он не проверяет код выхода, и неудавшаяся
-// установка службы осталась бы незамеченной.
+// установка службы осталась бы незамеченной. WebView2 здесь же по той же причине.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -110,30 +165,45 @@ begin
   begin
     if not Exec(ExpandConstant('{app}\FreeTurnService.exe'), 'install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
        or (ResultCode <> 0) then
+    begin
+      Log('FreeTurnService.exe install не удался, код ' + IntToStr(ResultCode));
       SuppressibleMsgBox(
         'Не удалось установить и запустить службу FreeTurn. Подробности в журнале событий Windows ' +
-        '(источник FreeTurnService). Запустите установку ещё раз.',
+        '(источник FreeTurnService). Запустите установщик ещё раз.',
         mbError, MB_OK, IDOK);
+    end;
+    RunWebView2;
+  end;
+end;
+
+// Службу снимаем до любых изменений: если она не удалилась, удаление отменяется целиком, иначе
+// Inno стёр бы файлы и запись об установке, а служба, адаптер и маршруты остались бы без
+// способа повторить. Служба снимает туннель, удаляет себя, адаптер, маршруты и {app}\Data.
+function InitializeUninstall: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  // Окно закрывается раньше службы, иначе оно переподключится к ней.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM FreeTurn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Exec(ExpandConstant('{app}\FreeTurnService.exe'), 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+     or (ResultCode <> 0) then
+  begin
+    Log('FreeTurnService.exe uninstall не удался, код ' + IntToStr(ResultCode));
+    SuppressibleMsgBox(
+      'Не удалось удалить службу FreeTurn, поэтому ничего не удалено. Закройте программы, которые ' +
+      'могут её занимать, и запустите удаление ещё раз. Если не помогло, перезагрузите компьютер.',
+      mbError, MB_OK, IDOK);
+    Result := False;
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  ResultCode: Integer;
   ProfilesDir: String;
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // Окно закрывается раньше службы, иначе оно переподключится к ней. Служба снимает туннель
-    // и удаляет себя, адаптер, маршруты и каталог {app}\Data. Файлы Inno удаляет после этого.
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM FreeTurn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if not Exec(ExpandConstant('{app}\FreeTurnService.exe'), 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-       or (ResultCode <> 0) then
-      SuppressibleMsgBox(
-        'Службу FreeTurn удалить не удалось. Перезагрузите компьютер и удалите программу ещё раз, ' +
-        'чтобы убрать адаптер и маршруты.',
-        mbError, MB_OK, IDOK);
-
     // Автозапуск пишет окно в раздел текущего пользователя.
     RegDeleteValue(HKCU, '{#RunKey}', 'FreeTurn');
 
