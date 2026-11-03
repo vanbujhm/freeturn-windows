@@ -560,15 +560,17 @@ func TestOpenCaptchaInBrowser(t *testing.T) {
 	if apiCode(t, e.api.OpenCaptchaInBrowser()) != codeNoCaptcha {
 		t.Fatal("без капчи браузер открыт")
 	}
-	e.svc.status = model.Status{Phase: model.PhaseCaptcha, CaptchaURL: "file:///C:/Windows/System32/calc.exe"}
-	if apiCode(t, e.api.OpenCaptchaInBrowser()) != codeNoCaptcha || len(*e.opened) != 0 {
-		t.Fatal("адрес не из веб открыт")
+	for _, bad := range []string{"file:///C:/Windows/System32/calc.exe", "https://captcha.example.test/page", "http://evil.example/"} {
+		e.svc.status = model.Status{Phase: model.PhaseCaptcha, CaptchaURL: bad}
+		if apiCode(t, e.api.OpenCaptchaInBrowser()) != codeNoCaptcha || len(*e.opened) != 0 {
+			t.Fatalf("внешний адрес %q открыт", bad)
+		}
 	}
-	e.svc.status.CaptchaURL = "https://captcha.example.test/page?x=1"
+	e.svc.status.CaptchaURL = "http://127.0.0.1:5000/page?x=1"
 	if err := e.api.OpenCaptchaInBrowser(); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(*e.opened, []string{"https://captcha.example.test/page?x=1"}) {
+	if !slices.Equal(*e.opened, []string{"http://127.0.0.1:5000/page?x=1"}) {
 		t.Fatalf("открыто %v", *e.opened)
 	}
 }

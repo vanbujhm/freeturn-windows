@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +27,7 @@ const (
 	eventLog         = "log"
 	eventImport      = "import"
 	eventServiceDown = "service-down"
+	eventUpdate      = "update" // полезная нагрузка update.Release: {Version, URL}
 )
 
 // Коды ошибок API. Интерфейс выбирает по ним текст, Message это запасной русский текст.
@@ -594,7 +594,8 @@ func (a *API) SaveDiagnostics() (string, error) {
 }
 
 // OpenCaptchaInBrowser открывает страницу капчи в браузере по умолчанию. Адрес приходит
-// от службы, поэтому открываются только http и https.
+// от службы, поэтому действует та же проверка, что у окна капчи (captchaURLAllowed): только
+// локальный адрес.
 func (a *API) OpenCaptchaInBrowser() error {
 	st, err := a.svc.Status()
 	if err != nil {
@@ -603,11 +604,10 @@ func (a *API) OpenCaptchaInBrowser() error {
 	if st.Phase != model.PhaseCaptcha || st.CaptchaURL == "" {
 		return newError(codeNoCaptcha, "капча сейчас не запрошена", nil)
 	}
-	u, err := url.Parse(st.CaptchaURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return newError(codeNoCaptcha, "адрес капчи не похож на веб-страницу", nil)
+	if !captchaURLAllowed(st.CaptchaURL) {
+		return newError(codeNoCaptcha, "адрес капчи не похож на локальную страницу", nil)
 	}
-	if err := a.openURL(u.String()); err != nil {
+	if err := a.openURL(st.CaptchaURL); err != nil {
 		return newError(codeStorage, "не удалось открыть браузер", err)
 	}
 	return nil

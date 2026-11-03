@@ -11,9 +11,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +31,14 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/profile"
+	"github.com/vanbujhm/freeturn-windows/internal/update"
+)
+
+// Задаются при сборке: -ldflags "-X main.version=1.2.3 -X main.updateRepo=владелец/имя".
+// Пустой updateRepo отключает проверку новой версии совсем.
+var (
+	version    = "dev"
+	updateRepo = ""
 )
 
 const (
@@ -42,6 +52,11 @@ const (
 	quitDisconnectLimit = 10 * time.Second
 
 	windowWidth, windowHeight = 420, 640
+
+	// updateFirstDelay - пауза до первой проверки версии, updateEvery - период следующих.
+	updateFirstDelay = 30 * time.Second
+	updateEvery      = 24 * time.Hour
+	updateFailedLog  = "не удалось проверить новую версию"
 
 	// wmEndSession приходит скрытому окну потока Wails при выходе из системы и выключении.
 	wmEndSession = 0x0016
@@ -154,7 +169,11 @@ func run(args []string) error {
 		quitting atomic.Bool
 		quitOnce sync.Once
 		ready    atomic.Bool // окно и трей созданы, второй экземпляр можно обслужить
+		captcha  *captchaManager
 	)
+	// Проверка версии живёт до выхода из программы.
+	updateCtx, stopUpdates := context.WithCancel(context.Background())
+	defer stopUpdates()
 	api := new(API)
 	emit := func(name string, data ...any) {
 		if app != nil {
@@ -207,11 +226,14 @@ func run(args []string) error {
 			},
 		},
 		OnShutdown: func() {
+			stopUpdates()
 			if sup != nil {
 				sup.Stop()
 			}
 		},
 	})
+
+	captcha = newCaptchaManager(app, func(line string) { emit(eventLog, line) })
 
 	dir, err := dataDir()
 	if err != nil {
@@ -257,6 +279,7 @@ func run(args []string) error {
 				if ev.Status != nil {
 					emit(eventStatus, *ev.Status)
 					tr.SetPhase(ev.Status.Phase)
+					captcha.Update(*ev.Status)
 				}
 			case ipc.KindLog:
 				emit(eventLog, ev.Log)
@@ -265,9 +288,11 @@ func run(args []string) error {
 		func() {
 			emit(eventServiceDown)
 			tr.SetDown()
+			captcha.Update(model.Status{}) // службы нет: о капче ничего не известно
 		},
 		func(st model.Status, first bool) {
 			tr.SetPhase(st.Phase)
+			captcha.Update(st)
 			api.onServiceUp(st, first)
 			if first && trayMode && st.Phase == model.PhaseBlocked {
 				showWindow()
@@ -351,6 +376,9 @@ func run(args []string) error {
 			emit(eventLog, line)
 		}
 		sup.Start()
+		go update.Watch(updateCtx, &http.Client{}, updateRepo, version, updateFirstDelay, updateEvery,
+			func(r update.Release) { emit(eventUpdate, r) },
+			func() { emit(eventLog, updateFailedLog) })
 		if raw := linkArg(args); raw != "" {
 			if err := api.handleLink(raw); err != nil {
 				app.Dialog.Error().SetTitle(appName).SetMessage(errText(err)).Show()
