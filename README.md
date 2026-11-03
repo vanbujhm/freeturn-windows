@@ -30,7 +30,7 @@
 Скачивайте установщик только у того, кто вам его прислал, и сверьте с ним хэш SHA-256, если он его сообщил:
 
 ```powershell
-Get-FileHash .\FreeTurnSetup-1.0.0.exe -Algorithm SHA256
+Get-FileHash .\FreeTurnSetup-0.9.0.exe -Algorithm SHA256
 ```
 
 ## Антивирус ругается или удаляет файл
@@ -50,7 +50,7 @@ Get-FileHash .\FreeTurnSetup-1.0.0.exe -Algorithm SHA256
 Нужны Go 1.26.10, Node, Wails v3 CLI (`wails3`) и Inno Setup 7. Сборку целиком делает скрипт `build.ps1`:
 
 ```powershell
-pwsh -File build.ps1 -Version 1.0.0 [-UpdateRepo владелец/репозиторий] [-Iscc путь\к\ISCC.exe] [-SkipInstaller]
+pwsh -File build.ps1 [-Version 0.9.0] [-UpdateRepo владелец/репозиторий] [-Iscc путь\к\ISCC.exe] [-SkipInstaller]
 ```
 
 Скрипт проверяет `wintun.dll` по хэшу и подписи, собирает интерфейс и оба exe с `CGO_ENABLED=0` в `build\` и затем установщик в `dist\`. Ключ `-SkipInstaller` останавливает его после exe, Inno Setup для этого не нужен. Тесты запускает `test.ps1`.

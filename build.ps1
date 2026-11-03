@@ -1,14 +1,16 @@
 ﻿# Собирает интерфейс, FreeTurn.exe, FreeTurnService.exe и установщик.
 #
-#   pwsh -File build.ps1 -Version 1.0.0 [-UpdateRepo владелец/репозиторий] [-Iscc путь] [-SkipInstaller]
+#   pwsh -File build.ps1 [-Version 0.9.0] [-UpdateRepo владелец/репозиторий] [-Iscc путь] [-SkipInstaller]
+#
+# Без -Version номер берётся из файла VERSION в корне репозитория.
 #
 # Результат: build\FreeTurn.exe, build\FreeTurnService.exe, build\wintun.dll и
 # dist\FreeTurnSetup-<версия>.exe. С -SkipInstaller сборка останавливается после build\,
 # Inno Setup для этого не нужен.
 #requires -Version 7
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Version,
+    # Номер версии. Пусто: берётся из файла VERSION.
+    [string]$Version = '',
     # Репозиторий GitHub для проверки новой версии. Пусто: проверка выключена.
     [string]$UpdateRepo = '',
     # Путь к ISCC.exe. Без него ищется в Program Files.
@@ -18,6 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+if (-not $Version) { $Version = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'VERSION') -TotalCount 1).Trim() }
 # Ядро и все пакеты собираются без cgo: gcc на машине сборки не нужен.
 $env:CGO_ENABLED = '0'
 

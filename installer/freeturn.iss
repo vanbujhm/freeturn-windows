@@ -1,5 +1,5 @@
 ; Установщик FreeTurn. Собирается из build.ps1:
-;   ISCC.exe /DAppVersion=1.0.0 /DRepoDir=<корень репозитория> installer\freeturn.iss
+;   ISCC.exe /DAppVersion=0.9.0 /DRepoDir=<корень репозитория> installer\freeturn.iss
 ; Данные службы лежат в {app}\Data. Их создаёт и удаляет FreeTurnService.exe install и
 ; uninstall, а служба считает путь от Program Files, поэтому каталог установки не выбирается.
 ; Сам установщик {app}\Data не трогает.
