@@ -57,4 +57,6 @@ pwsh -File build.ps1 [-Version 0.9.0] [-UpdateRepo владелец/репози
 
 ## Лицензии
 
-Уведомления о стороннем коде лежат в `LICENSES` и копируются в установленную программу: ядро (Happy Bunny License), Wintun (лицензия на готовые бинарные файлы), amneziawg-go, wireguard-windows и Wails (MIT). Лицензия самого проекта будет выбрана перед публичным релизом.
+Код FreeTurn для Windows распространяется под лицензией MIT, см. `LICENSE`.
+
+Уведомления о стороннем коде лежат в `LICENSES` и копируются в установленную программу: ядро (Happy Bunny License), Wintun (лицензия на готовые бинарные файлы), amneziawg-go, wireguard-windows и Wails (MIT). `LICENSES/THIRD-PARTY-NOTICES.txt` собирает лицензии всех модулей Go, вкомпилированных в exe, стандартной библиотеки Go и рантайма Wails. При смене зависимостей его нужно пересобрать по списку `go list -deps ./cmd/freeturn ./cmd/freeturn-service`.

@@ -439,4 +439,5 @@ type Rule struct {
 файлы), amneziawg-go, wireguard-windows, Wails. Код amnezia-client и turn-proxy-android под
 GPLv3 не копируется, оттуда берутся только идеи.
 
-Лицензия самого проекта выбирается перед публичным релизом.
+Сам проект распространяется под лицензией MIT. Перед публичным релизом добавлен файл
+`LICENSES/THIRD-PARTY-NOTICES.txt` с лицензиями всех вкомпилированных модулей Go.
