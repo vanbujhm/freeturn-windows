@@ -874,3 +874,36 @@ func TestUpdateProfileConcurrent(t *testing.T) {
 		t.Fatal("одно из изменений затёрто другим")
 	}
 }
+
+func TestPendingUpdate(t *testing.T) {
+	e := newEnv(t)
+	if u, err := e.api.PendingUpdate(); u != nil || err != nil {
+		t.Fatalf("до проверки: %+v, %v", u, err)
+	}
+	e.api.setUpdate(UpdateInfo{Version: "1.2.0", URL: "https://github.com/o/r/releases/tag/v1.2.0"})
+	if len(*e.events) != 1 || (*e.events)[0].name != eventUpdate {
+		t.Fatalf("события: %+v", *e.events)
+	}
+	if got, ok := (*e.events)[0].data[0].(UpdateInfo); !ok || got.Version != "1.2.0" {
+		t.Fatalf("данные события: %+v", (*e.events)[0].data)
+	}
+	// Значение не забывается: окно может перезагрузиться.
+	for i := 0; i < 2; i++ {
+		u, err := e.api.PendingUpdate()
+		if err != nil || u == nil || u.Version != "1.2.0" || u.URL != "https://github.com/o/r/releases/tag/v1.2.0" {
+			t.Fatalf("PendingUpdate: %+v, %v", u, err)
+		}
+	}
+	// Новая находка заменяет старую.
+	e.api.setUpdate(UpdateInfo{Version: "1.3.0"})
+	if u, _ := e.api.PendingUpdate(); u == nil || u.Version != "1.3.0" || u.URL != "" {
+		t.Fatalf("после второй находки: %+v", u)
+	}
+}
+
+func TestUpdateInfoJSONShape(t *testing.T) {
+	b, err := json.Marshal(UpdateInfo{Version: "1.0.0", URL: "https://github.com/o/r"})
+	if err != nil || string(b) != `{"Version":"1.0.0","URL":"https://github.com/o/r"}` {
+		t.Fatalf("%s, %v", b, err)
+	}
+}

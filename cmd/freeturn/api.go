@@ -27,7 +27,7 @@ const (
 	eventLog         = "log"
 	eventImport      = "import"
 	eventServiceDown = "service-down"
-	eventUpdate      = "update" // полезная нагрузка update.Release: {Version, URL}
+	eventUpdate      = "update" // полезная нагрузка UpdateInfo: {Version, URL}
 )
 
 // Коды ошибок API. Интерфейс выбирает по ним текст, Message это запасной русский текст.
@@ -148,6 +148,7 @@ type API struct {
 	previews      map[string]preview
 	previewSeq    uint64
 	pending       *ImportPreview
+	update        *UpdateInfo
 }
 
 func newAPI(d apiDeps) *API {
@@ -320,6 +321,30 @@ func (a *API) PendingImport() *ImportPreview {
 		return nil
 	}
 	return p
+}
+
+// UpdateInfo - найденная новая версия. Тот же вид уходит в событие update.
+type UpdateInfo struct{ Version, URL string }
+
+// PendingUpdate отдаёт последнюю найденную новую версию или nil. Окно вызывает метод при
+// загрузке: событие update могло уйти раньше, чем интерфейс подписался. Значение не
+// забывается, повторный вызов вернёт то же.
+func (a *API) PendingUpdate() (*UpdateInfo, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.update == nil {
+		return nil, nil
+	}
+	u := *a.update
+	return &u, nil
+}
+
+// setUpdate запоминает найденную версию и сообщает окну событием update.
+func (a *API) setUpdate(u UpdateInfo) {
+	a.mu.Lock()
+	a.update = &u
+	a.mu.Unlock()
+	a.emit(eventUpdate, u)
 }
 
 // handleLink разбирает ссылку, полученную при запуске программы, и сообщает окну.

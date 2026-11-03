@@ -8,7 +8,9 @@ import {
   reconcileSelection,
   serial,
   setStatusFromEvent,
+  setUpdate,
   state,
+  subscribe,
 } from "./store";
 import type { Status } from "./state";
 
@@ -21,6 +23,7 @@ beforeEach(() => {
   state.selectedId = "";
   state.logs = [];
   state.logTotal = 0;
+  state.update = null;
 });
 
 // deferred даёт ответ, который тест выдаёт сам, когда захочет.
@@ -173,5 +176,22 @@ describe("serial", () => {
     const run = serial();
     await expect(run(async () => Promise.reject(new Error("x")))).rejects.toThrow("x");
     await expect(run(async () => 5)).resolves.toBe(5);
+  });
+});
+
+describe("setUpdate", () => {
+  test("находка попадает в состояние и будит баннер", () => {
+    let woken = 0;
+    subscribe("update", () => woken++);
+    setUpdate({ Version: "1.2.0", URL: "https://github.com/o/r" });
+    expect(state.update).toEqual({ Version: "1.2.0", URL: "https://github.com/o/r" });
+    expect(woken).toBe(1);
+  });
+
+  test("пустой ответ PendingUpdate не стирает найденное событием", () => {
+    setUpdate({ Version: "1.2.0" });
+    setUpdate(null);
+    setUpdate(undefined);
+    expect(state.update).toEqual({ Version: "1.2.0" });
   });
 });

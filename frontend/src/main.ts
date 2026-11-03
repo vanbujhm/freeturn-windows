@@ -10,7 +10,7 @@ import { createProfiles } from "./screens/profiles";
 import { createRules } from "./screens/rules";
 import { createSettings } from "./screens/settings";
 import type { Status } from "./state";
-import { type Screen, type TabId, type UpdateInfo, notify, pushLog, setStatusFromEvent, state } from "./store";
+import { type Screen, type TabId, type UpdateInfo, notify, pushLog, setStatusFromEvent, setUpdate, state } from "./store";
 import * as S from "./strings";
 
 interface Tab {
@@ -74,10 +74,7 @@ function subscribeEvents(): void {
   Events.On("service-down", () => setStatusFromEvent({ Phase: "error", Code: "service_down" }));
   Events.On("log", (e) => pushLog(String(e.data ?? "")));
   Events.On("import", (e) => showImport(e.data as ImportPreview));
-  Events.On("update", (e) => {
-    state.update = (e.data as UpdateInfo | null) ?? null;
-    notify("update");
-  });
+  Events.On("update", (e) => setUpdate(e.data as UpdateInfo | null));
 }
 
 function showImport(p: ImportPreview | null): void {
@@ -94,6 +91,8 @@ async function load(): Promise<void> {
   if (profiles.status === "rejected") toast(errorText(profiles.reason), "error");
   // Ссылка, с которой запустили программу, могла прийти раньше подписки на событие.
   showImport(await API.PendingImport().catch(() => null));
+  // Версию могли найти раньше подписки на событие update.
+  setUpdate(await API.PendingUpdate().catch(() => null));
 }
 
 mount(document.getElementById("app")!);

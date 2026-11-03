@@ -194,6 +194,9 @@ func run(args []string) error {
 		MarshalError: marshalError,
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(frontend.Assets),
+			// Вызовы Wails принимаются только от главного окна: окно капчи показывает чужие
+			// скрипты (см. isolation.go).
+			Middleware: runtimeGuard,
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
@@ -326,6 +329,7 @@ func run(args []string) error {
 		Height: windowHeight,
 		Hidden: trayMode,
 	})
+	mainWindowID.Store(uint32(win.ID()))
 	// Крестик сворачивает в трей, туннель продолжает работать. При выходе (меню трея или
 	// конец сеанса Windows) окно закрывается как обычно.
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
@@ -377,7 +381,7 @@ func run(args []string) error {
 		}
 		sup.Start()
 		go update.Watch(updateCtx, &http.Client{}, updateRepo, version, updateFirstDelay, updateEvery,
-			func(r update.Release) { emit(eventUpdate, r) },
+			func(r update.Release) { api.setUpdate(UpdateInfo{Version: r.Version, URL: r.URL}) },
 			func() { emit(eventLog, updateFailedLog) })
 		if raw := linkArg(args); raw != "" {
 			if err := api.handleLink(raw); err != nil {

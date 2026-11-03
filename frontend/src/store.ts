@@ -55,6 +55,14 @@ export function notify(topic: Topic): void {
   for (const fn of listeners.get(topic) ?? []) fn();
 }
 
+// setUpdate запоминает найденную новую версию и сообщает баннеру. Пустое значение (на
+// загрузке версии ещё не нашли) ничего не стирает: событие могло прийти раньше ответа.
+export function setUpdate(u: UpdateInfo | null | undefined): void {
+  if (!u) return;
+  state.update = u;
+  notify("update");
+}
+
 export function pushLog(line: string): void {
   state.logs.push(line);
   state.logTotal++;
