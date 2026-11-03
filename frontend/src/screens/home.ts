@@ -15,6 +15,8 @@ export function createHome(goto: Goto): Screen {
   let pending = false;
   let pendingPhase = "";
   let pendingTimer = 0;
+  // Каждое нажатие получает свой номер: release прежнего нажатия не трогает таймер нового.
+  let pendingToken = 0;
   let view: StatusView = describeStatus(state.status);
 
   const updateText = h("span", { class: "grow" });
@@ -97,14 +99,15 @@ export function createHome(goto: Goto): Screen {
     // она не мигает активной между ответом на вызов и событием состояния.
     pending = true;
     pendingPhase = state.status.Phase;
-    pendingTimer = window.setTimeout(release, PENDING_LIMIT_MS);
+    const token = ++pendingToken;
+    pendingTimer = window.setTimeout(() => release(token), PENDING_LIMIT_MS);
     render();
     try {
       if (view.button === "disconnect") {
         await API.Disconnect();
       } else {
         if (!state.selectedId) {
-          release();
+          release(token);
           toast(S.home.noProfiles, "error");
           goto("profiles");
           return;
@@ -112,14 +115,15 @@ export function createHome(goto: Goto): Screen {
         await API.Connect(state.selectedId);
       }
     } catch (e) {
-      release();
+      release(token);
       toast(errorText(e), "error");
       if (toApiError(e).code === "incomplete") goto("profiles");
     }
   }
 
-  // release снимает занятость кнопки и перерисовывает её.
-  function release(): void {
+  // release снимает занятость кнопки, если нажатие с этим номером ещё последнее.
+  function release(token: number): void {
+    if (token !== pendingToken) return;
     window.clearTimeout(pendingTimer);
     pending = false;
     render();

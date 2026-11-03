@@ -157,3 +157,26 @@ export function formatBytes(n: number): string {
 export function formatRate(bytesPerSecond: number): string {
   return formatBytes(bytesPerSecond) + S.units.perSecond;
 }
+
+export type SettingsFlag = "KillSwitch" | "AllowLAN" | "Autostart" | "ConnectOnLaunch";
+
+interface FlagSettings {
+  Autostart: boolean;
+  ConnectOnLaunch: boolean;
+  Options: { KillSwitch: boolean; AllowLAN: boolean };
+}
+
+// withFlag возвращает копию настроек, где один переключатель имеет новое значение.
+// Остальные поля, в том числе правила обхода, остаются как были.
+export function withFlag<T extends FlagSettings>(cur: T, flag: SettingsFlag, value: boolean): T {
+  return {
+    ...cur,
+    Autostart: flag === "Autostart" ? value : cur.Autostart,
+    ConnectOnLaunch: flag === "ConnectOnLaunch" ? value : cur.ConnectOnLaunch,
+    Options: {
+      ...cur.Options,
+      KillSwitch: flag === "KillSwitch" ? value : cur.Options.KillSwitch,
+      AllowLAN: flag === "AllowLAN" ? value : cur.Options.AllowLAN,
+    },
+  };
+}

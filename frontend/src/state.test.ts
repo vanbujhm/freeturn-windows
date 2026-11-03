@@ -9,6 +9,7 @@ import {
   formatBytes,
   formatRate,
   toApiError,
+  withFlag,
   type Status,
 } from "./state";
 import * as S from "./strings";
@@ -184,5 +185,25 @@ describe("форматирование", () => {
 
   test("скорость", () => {
     expect(formatRate(2048)).toBe("2 КБ/с");
+  });
+});
+
+describe("withFlag", () => {
+  const base = { Autostart: true, ConnectOnLaunch: false, Options: { KillSwitch: false, AllowLAN: true, Rules: [1] }, X: "keep" };
+
+  test.each([
+    ["KillSwitch", (s: typeof base) => s.Options.KillSwitch, true],
+    ["AllowLAN", (s: typeof base) => s.Options.AllowLAN, false],
+    ["Autostart", (s: typeof base) => s.Autostart, false],
+    ["ConnectOnLaunch", (s: typeof base) => s.ConnectOnLaunch, true],
+  ] as const)("%s меняет только себя", (flag, read, value) => {
+    const next = withFlag(base, flag, value);
+    expect(read(next)).toBe(value);
+    expect(next.Options.Rules).toEqual([1]);
+    expect(next.X).toBe("keep");
+    // Исходные настройки не изменены.
+    expect(base.Options.KillSwitch).toBe(false);
+    const others = [next.Autostart, next.ConnectOnLaunch, next.Options.KillSwitch, next.Options.AllowLAN];
+    expect(others.filter((v, i) => v !== [base.Autostart, base.ConnectOnLaunch, base.Options.KillSwitch, base.Options.AllowLAN][i])).toHaveLength(1);
   });
 });

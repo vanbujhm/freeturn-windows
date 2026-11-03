@@ -1,10 +1,11 @@
 // Настройки: четыре переключателя. Каждое нажатие сразу сохраняется.
 import { API, fail, loadSettings } from "../api";
 import { h } from "../dom";
+import { type SettingsFlag, withFlag } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
 
-type Flag = "KillSwitch" | "AllowLAN" | "Autostart" | "ConnectOnLaunch";
+type Flag = SettingsFlag;
 
 interface Toggle {
   flag: Flag;
@@ -50,6 +51,9 @@ export function createSettings(): Screen {
   let busy = false;
 
   async function change(flag: Flag, input: HTMLInputElement): Promise<void> {
+    // Значение читается до render(): render выставляет переключатели из старых настроек
+    // и затёр бы нажатие.
+    const value = input.checked;
     const cur = state.settings;
     if (!cur || busy) {
       render();
@@ -57,17 +61,7 @@ export function createSettings(): Screen {
     }
     busy = true;
     render();
-    const value = input.checked;
-    const next = {
-      ...cur,
-      Autostart: flag === "Autostart" ? value : cur.Autostart,
-      ConnectOnLaunch: flag === "ConnectOnLaunch" ? value : cur.ConnectOnLaunch,
-      Options: {
-        ...cur.Options,
-        KillSwitch: flag === "KillSwitch" ? value : cur.Options.KillSwitch,
-        AllowLAN: flag === "AllowLAN" ? value : cur.Options.AllowLAN,
-      },
-    };
+    const next = withFlag(cur, flag, value);
     try {
       try {
         await API.SaveSettings(next);
