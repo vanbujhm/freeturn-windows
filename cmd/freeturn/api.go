@@ -45,6 +45,8 @@ const (
 	codeStorage        = "storage"
 	codeNoCaptcha      = "no_captcha"
 	codeSettings       = "settings"
+	codeBusy           = "busy"
+	codeTooManyRules   = "too_many_rules"
 )
 
 // Error - ошибка метода API. Через MarshalError уходит в интерфейс как JSON, поэтому у полей
@@ -92,15 +94,28 @@ type ImportPreview struct {
 type preview struct {
 	profile model.Profile
 	expires time.Time
+	seq     uint64 // порядок создания: при переполнении вытесняется самое старое
 }
+
+const (
+	// maxPreviews - сколько превью ждут подтверждения одновременно.
+	maxPreviews = 16
+	// maxRules - предел правил обхода в настройках.
+	maxRules = 200
+	// busyText - текст ошибки engine.ErrBusy. Через канал ошибка приходит текстом, а окно не
+	// импортирует engine (тянет сетевые пакеты службы); совпадение держит тест.
+	busyText = "engine: подключение уже идёт"
+)
 
 // apiDeps - всё внешнее, чем пользуется API. В тестах подменяется.
 type apiDeps struct {
-	Service      Service
-	Store        *profile.Store
-	Corrupt      bool // Open вернул ErrCorrupt
-	Settings     profile.Settings
-	SettingsPath string
+	Service  Service
+	Store    *profile.Store
+	Corrupt  bool // Open вернул ErrCorrupt
+	Settings profile.Settings
+	// SettingsReset: файл настроек не прочитан, взяты значения по умолчанию.
+	SettingsReset bool
+	SettingsPath  string
 	// Emit шлёт событие окну. Может быть nil.
 	Emit func(name string, data ...any)
 	// SetAutostart включает и выключает запуск с Windows.
@@ -123,27 +138,39 @@ type API struct {
 	openURL      func(string) error
 	now          func() time.Time
 
-	mu       sync.Mutex
-	corrupt  bool
-	settings profile.Settings
-	previews map[string]preview
-	pending  *ImportPreview
+	// profMu сериализует цепочки «прочитать профиль, изменить, записать» и удаление.
+	profMu sync.Mutex
+
+	mu            sync.Mutex
+	corrupt       bool
+	settingsReset bool
+	settings      profile.Settings
+	previews      map[string]preview
+	previewSeq    uint64
+	pending       *ImportPreview
 }
 
 func newAPI(d apiDeps) *API {
-	a := &API{
-		svc:          d.Service,
-		store:        d.Store,
-		corrupt:      d.Corrupt,
-		settings:     d.Settings,
-		settingsPath: d.SettingsPath,
-		emit:         d.Emit,
-		setAutostart: d.SetAutostart,
-		desktopDir:   d.DesktopDir,
-		openURL:      d.OpenURL,
-		now:          d.Now,
-		previews:     make(map[string]preview),
-	}
+	a := new(API)
+	a.init(d)
+	return a
+}
+
+// init заполняет API. Отдельно от newAPI, потому что main регистрирует сервис в Wails
+// раньше, чем читает данные: второй экземпляр программы должен выйти, ничего не прочитав.
+func (a *API) init(d apiDeps) {
+	a.svc = d.Service
+	a.store = d.Store
+	a.corrupt = d.Corrupt
+	a.settingsReset = d.SettingsReset
+	a.settings = d.Settings
+	a.settingsPath = d.SettingsPath
+	a.emit = d.Emit
+	a.setAutostart = d.SetAutostart
+	a.desktopDir = d.DesktopDir
+	a.openURL = d.OpenURL
+	a.now = d.Now
+	a.previews = make(map[string]preview)
 	if a.now == nil {
 		a.now = time.Now
 	}
@@ -153,7 +180,14 @@ func newAPI(d apiDeps) *API {
 	if a.setAutostart == nil {
 		a.setAutostart = func(bool) error { return nil }
 	}
-	return a
+}
+
+// SettingsReset сообщает, что файл настроек не прочитан и взяты значения по умолчанию.
+// Признак снимается после первого успешного SaveSettings.
+func (a *API) SettingsReset() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.settingsReset
 }
 
 // ProfilesCorrupt сообщает, что файл профилей не прочитан и нужен ResetProfiles.
@@ -227,30 +261,40 @@ func (a *API) PreviewLink(raw string) (ImportPreview, error) {
 			delete(a.previews, t)
 		}
 	}
-	a.previews[token] = preview{profile: p, expires: now.Add(previewTTL)}
+	// Лишние превью вытесняются от старых к новым: токены нельзя копить без предела.
+	for len(a.previews) >= maxPreviews {
+		oldest, found := "", false
+		for t, pv := range a.previews {
+			if !found || pv.seq < a.previews[oldest].seq {
+				oldest, found = t, true
+			}
+		}
+		delete(a.previews, oldest)
+	}
+	a.previewSeq++
+	a.previews[token] = preview{profile: p, expires: now.Add(previewTTL), seq: a.previewSeq}
 	return out, nil
 }
 
 // ConfirmImport сохраняет профиль из превью. Токен одноразовый и живёт десять минут.
-// Если запись не удалась, токен остаётся: можно повторить после ResetProfiles.
+// Токен вынимается из таблицы под замком, поэтому два быстрых нажатия сохраняют один
+// профиль. Если запись не удалась, токен возвращается: можно повторить после ResetProfiles.
 func (a *API) ConfirmImport(token string) (ProfileView, error) {
 	a.mu.Lock()
 	pv, ok := a.previews[token]
-	if ok && !a.now().Before(pv.expires) {
-		delete(a.previews, token)
-		ok = false
-	}
+	delete(a.previews, token)
+	expired := ok && !a.now().Before(pv.expires)
 	a.mu.Unlock()
-	if !ok {
+	if !ok || expired {
 		return ProfileView{}, newError(codePreviewExpired, "превью устарело, вставьте ссылку заново", nil)
 	}
 	saved, err := a.store.Save(pv.profile)
 	if err != nil {
+		a.mu.Lock()
+		a.previews[token] = pv
+		a.mu.Unlock()
 		return ProfileView{}, storeError(err)
 	}
-	a.mu.Lock()
-	delete(a.previews, token)
-	a.mu.Unlock()
 	return viewOf(saved), nil
 }
 
@@ -268,6 +312,13 @@ func (a *API) PendingImport() *ImportPreview {
 	defer a.mu.Unlock()
 	p := a.pending
 	a.pending = nil
+	if p == nil {
+		return nil
+	}
+	// Токен уже подтверждён, вытеснен или устарел: показывать нечего.
+	if pv, ok := a.previews[p.Token]; !ok || !a.now().Before(pv.expires) {
+		return nil
+	}
 	return p
 }
 
@@ -284,8 +335,12 @@ func (a *API) handleLink(raw string) error {
 	return nil
 }
 
-// updateProfile читает профиль, применяет изменение и сохраняет.
+// updateProfile читает профиль, применяет изменение и сохраняет. Замок держится на всей
+// цепочке: два параллельных изменения одного профиля не затирают друг друга, а удаление
+// не воскрешает профиль.
 func (a *API) updateProfile(id string, change func(*model.Profile) *Error) error {
+	a.profMu.Lock()
+	defer a.profMu.Unlock()
 	p, ok := a.store.Get(id)
 	if !ok {
 		return newError(codeNoProfile, "профиль не найден", nil)
@@ -314,14 +369,14 @@ func (a *API) SetCallLink(id, callLink string) error {
 // SetWGConfig задаёт конфиг WireGuard. Разбор нужен, чтобы отказать сразу, а не при
 // подключении. Текст ошибки разбора цитирует строки конфига, поэтому он не показывается.
 func (a *API) SetWGConfig(id, text string) error {
-	cfg, err := wgconf.Parse(text)
-	if err != nil {
-		return newError(codeBadConfig, "конфиг WireGuard не разобран: проверьте, что вставлен весь файл", err)
-	}
-	if len(cfg.Peers) != 1 {
-		return newError(codeBadConfig, "в конфиге должен быть ровно один пир", nil)
-	}
 	return a.updateProfile(id, func(p *model.Profile) *Error {
+		// Та же функция, что у engine: окно отказывает ровно тому, что отвергнет служба.
+		if _, err := wgconf.ParseForTunnel(text, p.MTU); err != nil {
+			if errors.Is(err, wgconf.ErrPeerCount) {
+				return newError(codeBadConfig, "в конфиге должен быть ровно один пир", nil)
+			}
+			return newError(codeBadConfig, "конфиг WireGuard не разобран: проверьте, что вставлен весь файл", nil)
+		}
 		p.WGConfig = text
 		return nil
 	})
@@ -329,7 +384,10 @@ func (a *API) SetWGConfig(id, text string) error {
 
 // DeleteProfile удаляет профиль и забывает его как последний.
 func (a *API) DeleteProfile(id string) error {
-	if err := a.store.Delete(id); err != nil {
+	a.profMu.Lock()
+	err := a.store.Delete(id)
+	a.profMu.Unlock()
+	if err != nil {
 		return storeError(err)
 	}
 	a.mu.Lock()
@@ -354,12 +412,27 @@ func (a *API) ResetProfiles() error {
 	return nil
 }
 
-// serviceError переводит ошибку канала в ошибку API.
+// serviceError переводит ошибку канала в ошибку API. Текст службы наружу не идёт: engine
+// отдаёт из Connect только ErrBusy, всё остальное получает постоянный код и сообщение.
 func serviceError(err error) *Error {
-	if errors.Is(err, ipc.ErrClosed) || errors.Is(err, ipc.ErrTimeout) || errors.Is(err, errNoService) {
+	switch {
+	case errors.Is(err, ipc.ErrClosed), errors.Is(err, ipc.ErrTimeout), errors.Is(err, errNoService):
 		return newError(codeServiceDown, "служба FreeTurn недоступна", err)
+	case err.Error() == busyText:
+		return newError(codeBusy, "подключение уже идёт, подождите", nil)
+	default:
+		return newError(codeService, "служба отклонила запрос, подробности в журнале", nil)
 	}
-	return newError(codeService, err.Error(), err)
+}
+
+// errText возвращает постоянный текст ошибки API для строки журнала окна. Текст
+// посторонних ошибок (системных, с путями) в журнал не попадает.
+func errText(err error) string {
+	var ae *Error
+	if errors.As(err, &ae) {
+		return ae.Message
+	}
+	return "ошибка"
 }
 
 // Connect отправляет службе профиль и настройки. Неполный профиль службе не отправляется.
@@ -396,7 +469,7 @@ func (a *API) remember(id string) {
 	next := a.settings
 	next.LastProfileID = id
 	if err := profile.SaveSettings(a.settingsPath, next); err != nil {
-		a.emit(eventLog, "не удалось запомнить профиль последнего подключения: "+err.Error())
+		a.emit(eventLog, "не удалось запомнить профиль последнего подключения")
 		return
 	}
 	a.settings = next
@@ -436,7 +509,13 @@ func (a *API) SaveSettings(s profile.Settings) error {
 	defer a.mu.Unlock()
 	cur := a.settings
 	s.LastProfileID = cur.LastProfileID
-	s.Options.Rules = append([]model.Rule(nil), s.Options.Rules...)
+	// Окну не доверяем: правила пересобираются из значений, в службу уходит только то, что
+	// прошло разбор.
+	rules, rerr := sanitizeRules(s.Options.Rules)
+	if rerr != nil {
+		return rerr
+	}
+	s.Options.Rules = rules
 
 	if s.Autostart != cur.Autostart {
 		if err := a.setAutostart(s.Autostart); err != nil {
@@ -450,7 +529,30 @@ func (a *API) SaveSettings(s profile.Settings) error {
 		return newError(codeSettings, "не удалось записать настройки", err)
 	}
 	a.settings = s
+	a.settingsReset = false
 	return nil
+}
+
+// sanitizeRules пересобирает правила через split.Classify (вид берётся по значению, не по
+// полю Kind), убирает повторы и отказывает при неверном значении или более maxRules правилах.
+func sanitizeRules(in []model.Rule) ([]model.Rule, *Error) {
+	out := make([]model.Rule, 0, len(in))
+	seen := make(map[model.Rule]bool, len(in))
+	for _, r := range in {
+		c, err := split.Classify(r.Value)
+		if err != nil {
+			return nil, newError(codeBadRule, err.Error(), err)
+		}
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	if len(out) > maxRules {
+		return nil, newError(codeTooManyRules, "слишком много правил обхода: не больше 200", nil)
+	}
+	return out, nil
 }
 
 // ClassifyRule определяет вид правила обхода по вводу человека.
@@ -530,7 +632,7 @@ func (a *API) onServiceUp(st model.Status, first bool) {
 		return
 	}
 	if err := a.Connect(id); err != nil {
-		a.emit(eventLog, "не удалось подключиться автоматически: "+err.Error())
+		a.emit(eventLog, "не удалось подключиться автоматически: "+errText(err))
 	}
 }
 

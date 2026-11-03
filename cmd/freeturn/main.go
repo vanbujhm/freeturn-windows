@@ -6,9 +6,8 @@
 //	--tray             окно при запуске скрыто, кроме состояния «Интернет заблокирован»
 //	freeturn://...     ссылка на импорт профиля; запущенному окну её передаёт второй запуск
 //
-// Переменная окружения FREETURN_DEV_CONSOLE=1 для разработки: окно не проверяет владельца
-// канала и не пишет себя в автозапуск. Так можно проверить окно со службой, запущенной
-// командой console, без установки. В обычном запуске канал обязан принадлежать LocalSystem.
+// Для разработки есть сборка с тегом devconsole (см. dev_on.go): окно не проверяет владельца
+// канала. В обычной сборке этого кода нет, канал обязан принадлежать LocalSystem.
 package main
 
 import (
@@ -33,16 +32,19 @@ import (
 )
 
 const (
-	appName       = "FreeTurn"
-	instanceID    = "com.freeturn.windows"
-	devConsoleEnv = "FREETURN_DEV_CONSOLE"
-	linkScheme    = "freeturn://"
+	appName    = "FreeTurn"
+	instanceID = "com.freeturn.windows"
+	linkScheme = "freeturn://"
 
 	dialTimeout = 2 * time.Second
-	// quitDisconnectLimit - сколько «Выход» ждёт отключения туннеля, потом выходит всё равно.
+	// quitDisconnectLimit - сколько выход из программы ждёт отключения туннеля, потом выходит
+	// всё равно.
 	quitDisconnectLimit = 10 * time.Second
 
 	windowWidth, windowHeight = 420, 640
+
+	// wmEndSession приходит скрытому окну потока Wails при выходе из системы и выключении.
+	wmEndSession = 0x0016
 )
 
 func main() {
@@ -92,6 +94,12 @@ func linkArg(args []string) string {
 	return ""
 }
 
+// showOnSecondLaunch решает, показывать ли окно по второму запуску: автозапуск с --tray
+// без ссылки не должен выдвигать окно, остальное это действие человека.
+func showOnSecondLaunch(args []string) bool {
+	return !hasTrayFlag(args) || linkArg(args) != ""
+}
+
 // marshalError отдаёт интерфейсу ошибки API как JSON с кодом.
 func marshalError(err error) []byte {
 	var ae *Error
@@ -105,9 +113,105 @@ func marshalError(err error) []byte {
 	return b
 }
 
+// loadSettings читает настройки. Неразобранный файл не мешает запуску: берутся значения по
+// умолчанию, reset говорит об этом интерфейсу. profile.LoadSettings сам молча подменяет
+// битый JSON значениями по умолчанию, поэтому файл проверяется ещё раз.
+func loadSettings(path string) (s profile.Settings, reset bool) {
+	s, err := profile.LoadSettings(path)
+	if err != nil {
+		return s, true
+	}
+	raw, rerr := os.ReadFile(path)
+	if rerr != nil {
+		return s, !errors.Is(rerr, os.ErrNotExist)
+	}
+	var probe profile.Settings
+	return s, json.Unmarshal(raw, &probe) != nil
+}
+
+// disconnectWithin просит службу отключить туннель и ждёт не дольше limit.
+func disconnectWithin(svc Service, limit time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		_ = svc.Disconnect()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(limit):
+	}
+}
+
 func run(args []string) error {
-	dev := os.Getenv(devConsoleEnv) == "1"
+	dev := devConsoleEnabled()
 	trayMode := hasTrayFlag(args)
+
+	var (
+		app      *application.App
+		win      *application.WebviewWindow
+		tr       *tray
+		sup      *supervisor
+		quitting atomic.Bool
+		quitOnce sync.Once
+		ready    atomic.Bool // окно и трей созданы, второй экземпляр можно обслужить
+	)
+	api := new(API)
+	emit := func(name string, data ...any) {
+		if app != nil {
+			app.Event.Emit(name, data...)
+		}
+	}
+	showWindow := func() {
+		win.Show()
+		win.UnMinimise()
+		win.Focus()
+	}
+
+	// Приложение создаётся первым: здесь второй экземпляр передаёт аргументы первому и
+	// выходит, ничего не прочитав и не показав диалогов. Данные читаются ниже.
+	app = application.New(application.Options{
+		Name:         appName,
+		Services:     []application.Service{application.NewService(api)},
+		MarshalError: marshalError,
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(frontend.Assets),
+		},
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
+			// Выход из системы: окно не мешает ему и перед концом просит службу отключить
+			// туннель. Остальное делает Wails (WM_ENDSESSION закрывает приложение).
+			WndProcInterceptor: func(_ uintptr, msg uint32, wParam, _ uintptr) (uintptr, bool) {
+				if msg == wmEndSession && wParam != 0 {
+					quitting.Store(true)
+					if sup != nil {
+						disconnectWithin(sup, quitDisconnectLimit)
+					}
+				}
+				return 0, false
+			},
+		},
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: instanceID,
+			OnSecondInstanceLaunch: func(d application.SecondInstanceData) {
+				if !ready.Load() {
+					return
+				}
+				if showOnSecondLaunch(d.Args) {
+					showWindow()
+				}
+				if raw := linkArg(d.Args); raw != "" {
+					if err := api.handleLink(raw); err != nil {
+						app.Dialog.Error().SetTitle(appName).SetMessage(errText(err)).Show()
+					}
+				}
+			},
+		},
+		OnShutdown: func() {
+			if sup != nil {
+				sup.Stop()
+			}
+		},
+	})
 
 	dir, err := dataDir()
 	if err != nil {
@@ -121,10 +225,7 @@ func run(args []string) error {
 		return fmt.Errorf("Не удалось открыть профили: %w", err)
 	}
 	settingsPath := filepath.Join(dir, "settings.json")
-	settings, err := profile.LoadSettings(settingsPath)
-	if err != nil {
-		return fmt.Errorf("Не удалось прочитать настройки: %w", err)
-	}
+	settings, settingsReset := loadSettings(settingsPath)
 
 	var owner *windows.SID
 	if !dev {
@@ -132,34 +233,17 @@ func run(args []string) error {
 			return fmt.Errorf("Не удалось определить владельца канала службы: %w", err)
 		}
 	}
-	// Запись в автозапуск следует настройке, по умолчанию она включена. Сборка для
-	// разработки себя в автозапуск не пишет.
+	// Запись в автозапуск следует настройке, по умолчанию она включена. Сбой не мешает
+	// запуску: окно работает и без автозапуска, о сбое узнает журнал. Сборка для разработки
+	// себя в автозапуск не пишет.
+	var startupLogs []string
 	if !dev {
 		if err := setAutostart(settings.Autostart); err != nil {
-			return fmt.Errorf("Не удалось обновить автозапуск: %w", err)
+			startupLogs = append(startupLogs, "не удалось обновить запуск с Windows")
 		}
 	}
 
-	var (
-		app      *application.App
-		win      *application.WebviewWindow
-		tr       *tray
-		api      *API
-		quitting atomic.Bool
-		quitOnce sync.Once
-	)
-	emit := func(name string, data ...any) {
-		if app != nil {
-			app.Event.Emit(name, data...)
-		}
-	}
-	showWindow := func() {
-		win.Show()
-		win.UnMinimise()
-		win.Focus()
-	}
-
-	sup := newSupervisor(
+	sup = newSupervisor(
 		func(onEvent func(ipc.Event)) (serviceConn, error) {
 			c, err := ipc.Dial(ipc.PipePath, dialTimeout, owner, onEvent)
 			if err != nil {
@@ -191,13 +275,14 @@ func run(args []string) error {
 		},
 	)
 
-	api = newAPI(apiDeps{
-		Service:      sup,
-		Store:        store,
-		Corrupt:      corrupt,
-		Settings:     settings,
-		SettingsPath: settingsPath,
-		Emit:         emit,
+	api.init(apiDeps{
+		Service:       sup,
+		Store:         store,
+		Corrupt:       corrupt,
+		Settings:      settings,
+		SettingsReset: settingsReset,
+		SettingsPath:  settingsPath,
+		Emit:          emit,
 		SetAutostart: func(on bool) error {
 			if dev {
 				return nil
@@ -208,36 +293,6 @@ func run(args []string) error {
 		OpenURL:    func(u string) error { return app.Browser.OpenURL(u) },
 	})
 
-	// handleLinkArg разбирает ссылку из аргументов и сообщает окну. Отказ показывается
-	// сообщением: окно может быть не готово принять событие.
-	handleLinkArg := func(args []string) {
-		raw := linkArg(args)
-		if raw == "" {
-			return
-		}
-		if err := api.handleLink(raw); err != nil {
-			app.Dialog.Error().SetTitle(appName).SetMessage(err.Error()).Show()
-		}
-	}
-
-	app = application.New(application.Options{
-		Name:         appName,
-		Services:     []application.Service{application.NewService(api)},
-		MarshalError: marshalError,
-		Assets: application.AssetOptions{
-			Handler: application.BundledAssetFileServer(frontend.Assets),
-		},
-		Windows: application.WindowsOptions{DisableQuitOnLastWindowClosed: true},
-		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: instanceID,
-			OnSecondInstanceLaunch: func(d application.SecondInstanceData) {
-				showWindow()
-				handleLinkArg(d.Args)
-			},
-		},
-		OnShutdown: sup.Stop,
-	})
-
 	win = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:   "main",
 		Title:  appName,
@@ -246,7 +301,8 @@ func run(args []string) error {
 		Height: windowHeight,
 		Hidden: trayMode,
 	})
-	// Крестик сворачивает в трей, туннель продолжает работать. При выходе окно закрывается.
+	// Крестик сворачивает в трей, туннель продолжает работать. При выходе (меню трея или
+	// конец сеанса Windows) окно закрывается как обычно.
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		if quitting.Load() {
 			return
@@ -259,15 +315,7 @@ func run(args []string) error {
 		quitOnce.Do(func() {
 			go func() {
 				// Плановый выход отключает туннель, но не зависает на службе, которая молчит.
-				done := make(chan struct{})
-				go func() {
-					_ = sup.Disconnect()
-					close(done)
-				}()
-				select {
-				case <-done:
-				case <-time.After(quitDisconnectLimit):
-				}
+				disconnectWithin(sup, quitDisconnectLimit)
 				quitting.Store(true)
 				app.Quit()
 			}()
@@ -281,7 +329,7 @@ func run(args []string) error {
 			go func() {
 				if tr.offersDisconnect() {
 					if err := api.Disconnect(); err != nil {
-						emit(eventLog, "не удалось отключить: "+err.Error())
+						emit(eventLog, "не удалось отключить: "+errText(err))
 					}
 					return
 				}
@@ -291,7 +339,7 @@ func run(args []string) error {
 					return
 				}
 				if err := api.Connect(id); err != nil {
-					emit(eventLog, "не удалось подключить: "+err.Error())
+					emit(eventLog, "не удалось подключить: "+errText(err))
 					showWindow()
 				}
 			}()
@@ -299,8 +347,16 @@ func run(args []string) error {
 	})
 
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		for _, line := range startupLogs {
+			emit(eventLog, line)
+		}
 		sup.Start()
-		handleLinkArg(args)
+		if raw := linkArg(args); raw != "" {
+			if err := api.handleLink(raw); err != nil {
+				app.Dialog.Error().SetTitle(appName).SetMessage(errText(err)).Show()
+			}
+		}
 	})
+	ready.Store(true)
 	return app.Run()
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vanbujhm/freeturn-windows/internal/engine"
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
 	"github.com/vanbujhm/freeturn-windows/internal/link"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
@@ -642,5 +644,231 @@ func TestOnServiceUpConnectOnLaunch(t *testing.T) {
 	e.api.onServiceUp(model.Status{Phase: model.PhaseIdle}, true)
 	if e.svc.connectCount() != before+1 {
 		t.Fatal("подключение при запуске не выполнено")
+	}
+}
+
+func TestConfirmImportConcurrent(t *testing.T) {
+	e := newEnv(t)
+	pv, err := e.api.PreviewLink(encodeLink(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workers = 16
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok, expired := 0, 0
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := e.api.ConfirmImport(pv.Token)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				ok++
+			case apiCode(t, err) == codePreviewExpired:
+				expired++
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if ok != 1 || expired != workers-1 {
+		t.Fatalf("успехов %d, отказов %d из %d", ok, expired, workers)
+	}
+	if list, _ := e.api.ListProfiles(); len(list) != 1 {
+		t.Fatalf("сохранено профилей: %d", len(list))
+	}
+}
+
+func TestPreviewsAreCapped(t *testing.T) {
+	e := newEnv(t)
+	first, err := e.api.PreviewLink(encodeLink(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last ImportPreview
+	for i := 0; i < maxPreviews; i++ {
+		if last, err = e.api.PreviewLink(encodeLink(t, nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.api.mu.Lock()
+	n := len(e.api.previews)
+	e.api.mu.Unlock()
+	if n != maxPreviews {
+		t.Fatalf("превью в таблице: %d", n)
+	}
+	if _, err := e.api.ConfirmImport(first.Token); apiCode(t, err) != codePreviewExpired {
+		t.Fatal("самое старое превью не вытеснено")
+	}
+	if _, err := e.api.ConfirmImport(last.Token); err != nil {
+		t.Fatalf("новое превью потеряно: %v", err)
+	}
+}
+
+func TestPendingImportChecksToken(t *testing.T) {
+	e := newEnv(t)
+	if err := e.api.handleLink(encodeLink(t, nil)); err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(previewTTL)
+	if p := e.api.PendingImport(); p != nil {
+		t.Fatalf("устаревшее превью отдано: %+v", p)
+	}
+
+	if err := e.api.handleLink(encodeLink(t, nil)); err != nil {
+		t.Fatal(err)
+	}
+	pv := (*e.events)[len(*e.events)-1].data[0].(ImportPreview)
+	if _, err := e.api.ConfirmImport(pv.Token); err != nil {
+		t.Fatal(err)
+	}
+	if p := e.api.PendingImport(); p != nil {
+		t.Fatalf("уже подтверждённое превью отдано: %+v", p)
+	}
+}
+
+func TestServiceErrorsAreConstant(t *testing.T) {
+	// Текст ошибки engine.ErrBusy приходит через канал строкой, коды зависят от его совпадения.
+	if busyText != engine.ErrBusy.Error() {
+		t.Fatalf("busyText %q разошёлся с engine.ErrBusy %q", busyText, engine.ErrBusy)
+	}
+	e := newEnv(t)
+	v := e.importProfile(t, nil)
+	e.complete(t, v.ID)
+
+	e.svc.connectErr = errors.New(busyText)
+	if apiCode(t, e.api.Connect(v.ID)) != codeBusy {
+		t.Fatal("ErrBusy службы не отдан как busy")
+	}
+	secret := `C:\Program Files\FreeTurn\Data\core\secret-path ` + testKey
+	e.svc.connectErr = errors.New(secret)
+	err := e.api.Connect(v.ID)
+	var ae *Error
+	if !errors.As(err, &ae) || ae.Code != codeService {
+		t.Fatalf("ожидался код service, получили %v", err)
+	}
+	raw, _ := json.Marshal(ae)
+	for _, s := range []string{err.Error(), string(raw), ae.Message} {
+		if strings.Contains(s, "secret-path") || strings.Contains(s, testKey) {
+			t.Fatalf("текст службы дошёл до окна: %s", s)
+		}
+	}
+	if errors.Unwrap(err) != nil {
+		t.Fatal("ошибка хранит текст службы в цепочке")
+	}
+
+	// Тот же текст в журнале окна при автоподключении.
+	before := len(*e.events)
+	e.api.onServiceUp(model.Status{Phase: model.PhaseIdle, AwaitingProfile: true}, false)
+	for _, ev := range (*e.events)[before:] {
+		for _, d := range ev.data {
+			if s, ok := d.(string); ok && strings.Contains(s, "secret-path") {
+				t.Fatalf("текст службы в журнале окна: %s", s)
+			}
+		}
+	}
+}
+
+func TestSaveSettingsSanitizesRules(t *testing.T) {
+	e := newEnv(t)
+	s := e.api.Settings()
+	s.Options.Rules = []model.Rule{
+		{Kind: model.RuleDomain, Value: " Example.TEST. "}, // вид и значение приводятся к норме
+		{Kind: model.RuleIP, Value: "203.0.113.0/24"},      // вид берётся по значению
+		{Kind: model.RuleDomain, Value: "example.test"},    // повтор
+	}
+	if err := e.api.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Rule{{Kind: model.RuleDomain, Value: "example.test"}, {Kind: model.RuleSubnet, Value: "203.0.113.0/24"}}
+	if got := e.api.Settings().Options.Rules; !slices.Equal(got, want) {
+		t.Fatalf("правила %+v", got)
+	}
+	saved, _ := profile.LoadSettings(filepath.Join(e.dir, "settings.json"))
+	if !slices.Equal(saved.Options.Rules, want) {
+		t.Fatalf("правила в файле %+v", saved.Options.Rules)
+	}
+
+	bad := e.api.Settings()
+	bad.Options.Rules = append(bad.Options.Rules, model.Rule{Kind: model.RuleDomain, Value: "*.example.test"})
+	if apiCode(t, e.api.SaveSettings(bad)) != codeBadRule {
+		t.Fatal("неверное правило принято")
+	}
+	if got := e.api.Settings().Options.Rules; !slices.Equal(got, want) {
+		t.Fatalf("отказ изменил правила: %+v", got)
+	}
+
+	many := e.api.Settings()
+	many.Options.Rules = nil
+	for i := 0; i <= maxRules; i++ {
+		many.Options.Rules = append(many.Options.Rules, model.Rule{Value: fmt.Sprintf("h%d.example.test", i)})
+	}
+	if apiCode(t, e.api.SaveSettings(many)) != codeTooManyRules {
+		t.Fatal("больше 200 правил принято")
+	}
+	many.Options.Rules = many.Options.Rules[:maxRules]
+	if err := e.api.SaveSettings(many); err != nil {
+		t.Fatalf("ровно 200 правил: %v", err)
+	}
+}
+
+func TestSettingsResetFlag(t *testing.T) {
+	e := newEnv(t)
+	e.api.settingsReset = true
+	if !e.api.SettingsReset() {
+		t.Fatal("признак не виден")
+	}
+	if err := e.api.SaveSettings(e.api.Settings()); err != nil {
+		t.Fatal(err)
+	}
+	if e.api.SettingsReset() {
+		t.Fatal("признак остался после сохранения")
+	}
+}
+
+func TestSetWGConfigUsesProfileMTU(t *testing.T) {
+	e := newEnv(t)
+	zeroMTU := strings.Replace(testWGConfig, "Address", "MTU = 0\nAddress", 1)
+
+	plain := e.importProfile(t, nil)
+	if apiCode(t, e.api.SetWGConfig(plain.ID, zeroMTU)) != codeBadConfig {
+		t.Fatal("конфиг с MTU 0 принят у профиля без MTU")
+	}
+	withMTU := e.importProfile(t, map[string]any{"mtu": 1300})
+	if err := e.api.SetWGConfig(withMTU.ID, zeroMTU); err != nil {
+		t.Fatalf("MTU профиля не учтён: %v", err)
+	}
+}
+
+func TestUpdateProfileConcurrent(t *testing.T) {
+	e := newEnv(t)
+	v := e.importProfile(t, nil)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			if err := e.api.SetCallLink(v.ID, testCallLink); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			if err := e.api.SetWGConfig(v.ID, testWGConfig); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	wg.Wait()
+	got, _ := e.store.Get(v.ID)
+	if got.CallLink != testCallLink || got.WGConfig != testWGConfig {
+		t.Fatal("одно из изменений затёрто другим")
 	}
 }

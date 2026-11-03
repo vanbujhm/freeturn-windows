@@ -47,23 +47,26 @@ const (
 	lookIdle
 	lookBusy
 	lookOn
-	lookBad
+	lookBlocked
+	lookError
 )
 
 var lookColors = map[trayLook]color.RGBA{
-	lookDown: {R: 0x9a, G: 0x9a, B: 0x9a, A: 0xff},
-	lookIdle: {R: 0x6b, G: 0x72, B: 0x80, A: 0xff},
-	lookBusy: {R: 0xf5, G: 0xa6, B: 0x23, A: 0xff},
-	lookOn:   {R: 0x2e, G: 0xa0, B: 0x43, A: 0xff},
-	lookBad:  {R: 0xd9, G: 0x3a, B: 0x3a, A: 0xff},
+	lookDown:    {R: 0x9a, G: 0x9a, B: 0x9a, A: 0xff},
+	lookIdle:    {R: 0x6b, G: 0x72, B: 0x80, A: 0xff},
+	lookBusy:    {R: 0xf5, G: 0xa6, B: 0x23, A: 0xff},
+	lookOn:      {R: 0x2e, G: 0xa0, B: 0x43, A: 0xff},
+	lookBlocked: {R: 0xd9, G: 0x3a, B: 0x3a, A: 0xff},
+	lookError:   {R: 0xd9, G: 0x3a, B: 0x3a, A: 0xff},
 }
 
 var lookTips = map[trayLook]string{
-	lookDown: "FreeTurn: служба недоступна",
-	lookIdle: "FreeTurn: отключено",
-	lookBusy: "FreeTurn: подключение",
-	lookOn:   "FreeTurn: подключено",
-	lookBad:  "FreeTurn: нет интернета или ошибка",
+	lookDown:    "FreeTurn: служба недоступна",
+	lookIdle:    "FreeTurn: отключено",
+	lookBusy:    "FreeTurn: подключение",
+	lookOn:      "FreeTurn: подключено",
+	lookBlocked: "FreeTurn: интернет заблокирован",
+	lookError:   "FreeTurn: ошибка подключения",
 }
 
 // lookOfPhase выбирает вид значка по этапу подключения.
@@ -73,16 +76,19 @@ func lookOfPhase(p model.Phase) trayLook {
 		return lookOn
 	case model.PhaseConnecting, model.PhaseCaptcha, model.PhaseReconnecting:
 		return lookBusy
-	case model.PhaseError, model.PhaseBlocked:
-		return lookBad
+	case model.PhaseBlocked:
+		return lookBlocked
+	case model.PhaseError:
+		return lookError
 	default:
 		return lookIdle
 	}
 }
 
 // canDisconnect сообщает, что пункт меню должен предлагать «Отключить»: туннель есть, идёт
-// подключение или стоит блокировка (отключение снимает её).
-func canDisconnect(l trayLook) bool { return l == lookOn || l == lookBusy || l == lookBad }
+// подключение или стоит блокировка (отключение снимает её). После ошибки туннеля нет:
+// предлагается «Подключить».
+func canDisconnect(l trayLook) bool { return l == lookOn || l == lookBusy || l == lookBlocked }
 
 func newTray(app *application.App, act trayActions) *tray {
 	t := &tray{st: app.SystemTray.New(), look: lookDown, icons: map[trayLook][]byte{}}
