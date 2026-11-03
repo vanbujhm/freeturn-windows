@@ -3,7 +3,10 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 func TestRuntimeRequestAllowed(t *testing.T) {
@@ -58,5 +61,45 @@ func TestRuntimeGuardHandler(t *testing.T) {
 	}
 	if code := do("3"); code != http.StatusOK || reached != 1 {
 		t.Fatalf("главное окно: код %d, дошло %d", code, reached)
+	}
+}
+
+func TestMainEmitter(t *testing.T) {
+	var sent []*application.CustomEvent
+	emit := newMainEmitter(func(ev *application.CustomEvent) { sent = append(sent, ev) })
+
+	emit("status", "один")
+	emit("service-down")
+	emit("many", 1, "два")
+	emit("struct", UpdateInfo{Version: "1.0.0"})
+
+	if len(sent) != 4 {
+		t.Fatalf("отправлено %d событий, ждали 4 (по одному на вызов)", len(sent))
+	}
+	want := []struct {
+		name string
+		data any
+	}{
+		{"status", "один"},
+		{"service-down", nil},
+		{"many", []any{1, "два"}},
+		{"struct", UpdateInfo{Version: "1.0.0"}},
+	}
+	for i, w := range want {
+		if sent[i].Name != w.name || !reflect.DeepEqual(sent[i].Data, w.data) || sent[i].Sender != "" {
+			t.Errorf("событие %d: %+v, ждали %+v", i, sent[i], w)
+		}
+	}
+}
+
+func TestEventDataShape(t *testing.T) {
+	if eventData(nil) != nil {
+		t.Fatal("пустой список должен давать nil")
+	}
+	if got := eventData([]any{"a"}); got != "a" {
+		t.Fatalf("одно значение: %v", got)
+	}
+	if got, ok := eventData([]any{"a", "b"}).([]any); !ok || len(got) != 2 {
+		t.Fatalf("несколько значений: %v", got)
 	}
 }

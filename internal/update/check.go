@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,6 +22,12 @@ const (
 	pageHost = "https://github.com/"
 	// requestTimeout - предел одного запроса.
 	requestTimeout = 10 * time.Second
+	// maxVersion - предел длины номера версии.
+	maxVersion = 64
+	// apiHost - единственный хост, на который разрешены переадресации.
+	apiHost = "api.github.com"
+	// maxRedirects - сколько переадресаций допускается.
+	maxRedirects = 5
 	// maxBody - сколько байт ответа читается. Остальное отбрасывается.
 	maxBody = 1 << 20
 )
@@ -70,7 +77,15 @@ func Check(ctx context.Context, c *http.Client, repo, current string) (Release, 
 	}
 	req.Header.Set("User-Agent", "FreeTurn/"+current)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := c.Do(req)
+	// Переадресации разрешены только на тот же API: копия клиента, чужой клиент не меняется.
+	pinned := *c
+	pinned.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) > maxRedirects || r.URL.Scheme != "https" || r.URL.Hostname() != apiHost || r.URL.Port() != "" {
+			return ErrRequest
+		}
+		return nil
+	}
+	resp, err := pinned.Do(req)
 	if err != nil {
 		return Release{}, false, ErrRequest
 	}
@@ -86,14 +101,45 @@ func Check(ctx context.Context, c *http.Client, repo, current string) (Release, 
 		return Release{}, false, ErrFormat
 	}
 	ver := strings.TrimPrefix(strings.TrimPrefix(body.Tag, "v"), "V")
-	if ver == "" {
+	if !versionOK(ver) {
 		return Release{}, false, ErrFormat
 	}
 	rel := Release{Version: ver}
-	if strings.HasPrefix(body.HTMLURL, pageHost) {
+	if pageURLOK(body.HTMLURL) {
 		rel.URL = body.HTMLURL
 	}
 	return rel, Newer(ver, current), nil
+}
+
+// versionOK: непустой номер до 64 знаков из букв, цифр и . + -. Он попадает в интерфейс и в
+// журнал, поэтому всё остальное отвергается.
+func versionOK(v string) bool {
+	if v == "" || len(v) > maxVersion {
+		return false
+	}
+	for _, r := range v {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '.', r == '+', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// pageURLOK: адрес страницы релиза это https://github.com/... без имени пользователя и порта,
+// без пробелов, управляющих знаков и обратной косой черты. Иное игнорируется.
+func pageURLOK(raw string) bool {
+	if !strings.HasPrefix(raw, pageHost) {
+		return false
+	}
+	for _, r := range raw {
+		if r <= ' ' || r == 0x7f || r == '\\' {
+			return false
+		}
+	}
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host == "github.com" && u.User == nil && u.Opaque == ""
 }
 
 // Watch проверяет версию через delay после вызова, затем каждые every, пока жив ctx. Новый

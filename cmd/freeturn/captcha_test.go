@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
+
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
 
@@ -94,5 +96,30 @@ func TestCaptchaManager(t *testing.T) {
 	}
 	if len(logs) != 1 || logs[0] != captchaRefusedLog {
 		t.Fatalf("журнал %v", logs)
+	}
+}
+
+func TestCaptchaWindowOptions(t *testing.T) {
+	o := captchaWindowOptions(okURL)
+	if o.Name != captchaName || o.Name == "main" || o.URL != okURL || o.Title != "Проверка VK" {
+		t.Fatalf("параметры окна: %+v", o)
+	}
+	if o.Width != 480 || o.Height != 720 || o.MinWidth != 360 || o.MinHeight != 560 || o.DisableResize {
+		t.Fatalf("размеры: %+v", o)
+	}
+	for _, p := range []application.PermissionType{
+		application.PermissionMicrophone, application.PermissionCamera, application.PermissionGeolocation,
+		application.PermissionNotifications, application.PermissionClipboardRead,
+	} {
+		if o.Permissions[p] != application.PermissionDeny {
+			t.Errorf("разрешение %d не отклонено: %v", p, o.Permissions[p])
+		}
+	}
+	for _, k := range []application.CoreWebView2PermissionKind{
+		application.CoreWebView2PermissionKindUnknownPermission, application.CoreWebView2PermissionKindOtherSensors,
+	} {
+		if o.Windows.Permissions[k] != application.CoreWebView2PermissionStateDeny {
+			t.Errorf("вид %d не отклонён", k)
+		}
 	}
 }

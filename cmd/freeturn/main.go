@@ -175,11 +175,13 @@ func run(args []string) error {
 	updateCtx, stopUpdates := context.WithCancel(context.Background())
 	defer stopUpdates()
 	api := new(API)
-	emit := func(name string, data ...any) {
-		if app != nil {
-			app.Event.Emit(name, data...)
+	// События уходят только главному окну: окно капчи показывает чужие скрипты, а
+	// app.Event.Emit рассылает событие всем окнам (см. isolation.go).
+	emit := newMainEmitter(func(ev *application.CustomEvent) {
+		if win != nil {
+			win.DispatchWailsEvent(ev)
 		}
-	}
+	})
 	showWindow := func() {
 		win.Show()
 		win.UnMinimise()

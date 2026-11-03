@@ -6,14 +6,42 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // Окно капчи показывает страницу ВК, а её скрипты приходят через локальный прокси и
 // недоверенные. Wails на рабочем столе принимает вызовы среды выполнения и привязанных
 // методов (POST /wails/runtime) от любой страницы любого окна, поэтому защита ставится
 // здесь, в application.AssetOptions.Middleware: эта цепочка стоит перед всеми внутренними
-// обработчиками Wails. WebView2 сам добавляет к каждому запросу заголовок x-wails-window-id
-// с номером окна, страница подменить его не может.
+// обработчиками Wails. Заголовок x-wails-window-id с номером окна ставит Go-код Wails
+// (webview_window_windows.go, processRequest; application.go, заголовки запроса), поверх
+// значения, присланного страницей, так что подменить его страница не может.
+//
+// Среда выполнения Wails внедряется в каждое окно при каждой навигации (navigationCompleted),
+// в том числе в окно капчи, поэтому защита нужна и для исходящих событий: см. newMainEmitter.
+
+// eventData собирает полезную нагрузку события так же, как app.Event.Emit: одно значение
+// уходит как есть, несколько массивом, ни одного как nil. Интерфейс ждёт именно такой вид.
+func eventData(data []any) any {
+	switch len(data) {
+	case 0:
+		return nil
+	case 1:
+		return data[0]
+	default:
+		return data
+	}
+}
+
+// newMainEmitter возвращает emit для событий интерфейса. app.Event.Emit рассылает событие
+// всем окнам, в том числе окну капчи с чужими скриптами (статусы, журнал, превью импорта с
+// ключами). Здесь событие отдаётся только send, а send связан с главным окном.
+func newMainEmitter(send func(*application.CustomEvent)) func(name string, data ...any) {
+	return func(name string, data ...any) {
+		send(&application.CustomEvent{Name: name, Data: eventData(data)})
+	}
+}
 
 // assetHost - хост собственного источника страниц Wails в Windows (internal/assetserver).
 const assetHost = "wails.localhost"

@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	captchaName                       = "captcha"
 	captchaTitle                      = "Проверка VK"
 	captchaWidth, captchaHeight       = 480, 720
 	captchaMinWidth, captchaMinHeight = 360, 560
@@ -109,6 +110,35 @@ func (m *captchaManager) Update(st model.Status) {
 	}
 }
 
+// captchaWindowOptions - параметры окна капчи. Имя captcha отличает его от главного окна
+// (runtimeRequestAllowed). Разрешения WebView2 отклоняются все: страница чужая, а буфер
+// обмена хранит ссылки и конфигурации с ключами. Без явной политики Wails разрешает всё.
+// Прочие виды разрешений (в том числе неизвестные) спросят человека, как в браузере.
+func captchaWindowOptions(u string) application.WebviewWindowOptions {
+	return application.WebviewWindowOptions{
+		Name:      captchaName,
+		Title:     captchaTitle,
+		URL:       u,
+		Width:     captchaWidth,
+		Height:    captchaHeight,
+		MinWidth:  captchaMinWidth,
+		MinHeight: captchaMinHeight,
+		Permissions: map[application.PermissionType]application.Permission{
+			application.PermissionMicrophone:    application.PermissionDeny,
+			application.PermissionCamera:        application.PermissionDeny,
+			application.PermissionGeolocation:   application.PermissionDeny,
+			application.PermissionNotifications: application.PermissionDeny,
+			application.PermissionClipboardRead: application.PermissionDeny,
+		},
+		Windows: application.WindowsWindow{
+			Permissions: map[application.CoreWebView2PermissionKind]application.CoreWebView2PermissionState{
+				application.CoreWebView2PermissionKindUnknownPermission: application.CoreWebView2PermissionStateDeny,
+				application.CoreWebView2PermissionKindOtherSensors:      application.CoreWebView2PermissionStateDeny,
+			},
+		},
+	}
+}
+
 // newCaptchaManager связывает менеджер с окнами Wails. Операции с окнами идут через
 // главный поток, как требует Wails, и ставятся в очередь, не блокируя вызывающего: Update
 // зовут из потока выдачи событий. Указатель на окно трогает только главный поток.
@@ -125,19 +155,17 @@ func newCaptchaManager(app *application.App, logf func(string)) *captchaManager 
 					win.Focus()
 					return
 				}
-				w := app.Window.NewWithOptions(application.WebviewWindowOptions{
-					Title:     captchaTitle,
-					URL:       u,
-					Width:     captchaWidth,
-					Height:    captchaHeight,
-					MinWidth:  captchaMinWidth,
-					MinHeight: captchaMinHeight,
-				})
-				// Закрытие человеком не отменяет подключение: окно просто исчезает.
+				w := app.Window.NewWithOptions(captchaWindowOptions(u))
+				// Закрытие человеком не отменяет подключение: окно просто исчезает. Хук
+				// Wails выполняется в отдельной горутине, а win принадлежит главному потоку,
+				// поэтому указатель сбрасывается через очередь главного потока: операции
+				// после закрытия (новая капча) увидят уже сброшенное значение.
 				w.RegisterHook(events.Common.WindowClosing, func(*application.WindowEvent) {
-					if win == w {
-						win = nil
-					}
+					application.InvokeAsync(func() {
+						if win == w {
+							win = nil
+						}
+					})
 				})
 				win = w
 				w.Focus()

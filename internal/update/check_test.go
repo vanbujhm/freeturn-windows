@@ -18,6 +18,7 @@ type fakeTransport struct {
 	err    error
 	calls  atomic.Int32
 	last   *http.Request
+	fn     func(*http.Request) *http.Response // если задана, отвечает вместо status и body
 }
 
 func (f *fakeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -25,6 +26,9 @@ func (f *fakeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	f.last = r
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.fn != nil {
+		return f.fn(r), nil
 	}
 	return &http.Response{
 		StatusCode: f.status,
