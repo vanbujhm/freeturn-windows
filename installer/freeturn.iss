@@ -179,23 +179,30 @@ end;
 // Службу снимаем до любых изменений: если она не удалилась, удаление отменяется целиком, иначе
 // Inno стёр бы файлы и запись об установке, а служба, адаптер и маршруты остались бы без
 // способа повторить. Служба снимает туннель, удаляет себя, адаптер, маршруты и {app}\Data.
-function InitializeUninstall: Boolean;
+// Вызывается после подтверждения удаления: InitializeUninstall идёт раньше вопроса, и ответ
+// «Нет» оставил бы программу без службы.
+function RemoveService: Boolean;
 var
   ResultCode: Integer;
+  ServiceExe: String;
 begin
   Result := True;
   // Окно закрывается раньше службы, иначе оно переподключится к ней.
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM FreeTurn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if not Exec(ExpandConstant('{app}\FreeTurnService.exe'), 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-     or (ResultCode <> 0) then
+  ServiceExe := ExpandConstant('{app}\FreeTurnService.exe');
+  if FileExists(ServiceExe) then
+    Result := Exec(ServiceExe, 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)
+  else
   begin
-    Log('FreeTurnService.exe uninstall не удался, код ' + IntToStr(ResultCode));
-    SuppressibleMsgBox(
-      'Не удалось удалить службу FreeTurn, поэтому ничего не удалено. Закройте программы, которые ' +
-      'могут её занимать, и запустите удаление ещё раз. Если не помогло, перезагрузите компьютер.',
-      mbError, MB_OK, IDOK);
-    Result := False;
+    // Файла нет, например его убрал антивирус. Удалению это мешать не должно: службу снимаем
+    // средствами системы. Адаптер и маршруты в таком случае уберёт следующий запуск Windows
+    // или ручная очистка, а код 1060 значит, что службы уже нет.
+    Log('Нет файла ' + ServiceExe + ', службу снимаем через sc');
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop FreeTurnService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'delete FreeTurnService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
+  if not Result then
+    Log('FreeTurnService.exe uninstall не удался, код ' + IntToStr(ResultCode));
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -204,6 +211,15 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    if not RemoveService then
+    begin
+      SuppressibleMsgBox(
+        'Не удалось удалить службу FreeTurn, поэтому ничего не удалено. Закройте программы, которые ' +
+        'могут её занимать, и запустите удаление ещё раз. Если не помогло, перезагрузите компьютер.',
+        mbError, MB_OK, IDOK);
+      Abort;
+    end;
+
     // Автозапуск пишет окно в раздел текущего пользователя.
     RegDeleteValue(HKCU, '{#RunKey}', 'FreeTurn');
 
