@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"syscall"
 	"time"
@@ -185,7 +184,7 @@ func removeWintun(check, removeAdapter, removeDriver func() error) {
 	_ = removeDriver()
 }
 
-// removeData снимает маршруты и удаляет каталог данных, потом папку FreeTurn, если она пуста.
+// removeData снимает маршруты и удаляет каталог данных.
 func removeData() error {
 	base, err := programFilesDir()
 	if err != nil {
@@ -194,17 +193,14 @@ func removeData() error {
 	return removeDataIn(base, netcfg.RemoveRoutes)
 }
 
-// removeDataIn удаляет каталог данных в заданном Program Files. Папку FreeTurn Inno Setup
-// убирает сам вместе с установленными файлами, и порядок этих действий не задан: пустую папку
-// удаляем, чужие файлы в ней оставляем. Данным из Program Files верим: подбросить их там некому.
+// removeDataIn снимает маршруты из файла состояния и удаляет каталог данных в заданном
+// Program Files. Папку FreeTurn не трогает: её удаляет Inno Setup вместе со своими файлами,
+// а во время удаления деинсталлятор держит её открытой, и попытка удалить её здесь давала
+// ERROR_SHARING_VIOLATION и срывала удаление. Данным из Program Files верим: подбросить их
+// там некому.
 func removeDataIn(programFiles string, removeRoutes func([]netcfg.BypassRoute) error) error {
 	p := dataPathsFor(programFiles)
-	err := errors.Join(removeSavedRoutes(p.state, removeRoutes), os.RemoveAll(p.root))
-	if rmErr := os.Remove(p.app); rmErr != nil &&
-		!errors.Is(rmErr, fs.ErrNotExist) && !errors.Is(rmErr, windows.ERROR_DIR_NOT_EMPTY) {
-		err = errors.Join(err, rmErr)
-	}
-	return err
+	return errors.Join(removeSavedRoutes(p.state, removeRoutes), os.RemoveAll(p.root))
 }
 
 // removeSavedRoutes снимает маршруты обхода из файла состояния. Они остаются, только если служба

@@ -183,7 +183,9 @@ func noRoutes(t *testing.T) func([]netcfg.BypassRoute) error {
 }
 
 // Установщик уже убрал свои файлы: остаётся только Data, и пустая папка FreeTurn уходит с ней.
-func TestRemoveDataRemovesEmptyApp(t *testing.T) {
+// Папку программы удаляет Inno Setup вместе со своими файлами. Во время удаления деинсталлятор
+// держит её открытой, поэтому служба её не трогает: иначе удаление падало с ERROR_SHARING_VIOLATION.
+func TestRemoveDataLeavesAppToInstaller(t *testing.T) {
 	base := t.TempDir()
 	p, err := prepareDataDirIn(base, testSDDL(t))
 	if err != nil {
@@ -192,11 +194,27 @@ func TestRemoveDataRemovesEmptyApp(t *testing.T) {
 	if err := os.WriteFile(p.state, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Как деинсталлятор: каталог открыт без FILE_SHARE_DELETE.
+	name, err := windows.UTF16PtrFromString(p.app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(name, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { windows.CloseHandle(h) })
+
 	if err := removeDataIn(base, noRoutes(t)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(p.app); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("папка FreeTurn осталась: %v", err)
+	if _, err := os.Lstat(p.root); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Data осталась: %v", err)
+	}
+	if _, err := os.Stat(p.app); err != nil {
+		t.Errorf("папку программы должен удалять установщик, а её нет: %v", err)
 	}
 }
 

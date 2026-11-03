@@ -63,6 +63,11 @@ Name: "{autodesktop}\FreeTurn"; Filename: "{app}\FreeTurn.exe"
 [Run]
 Filename: "{app}\FreeTurn.exe"; Description: "Запустить FreeTurn"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
+[UninstallDelete]
+; Папка могла существовать до установки, например после сбоя прошлого удаления: Inno удаляет
+; только созданные им папки. Пустую убираем всегда.
+Type: dirifempty; Name: "{app}"
+
 [Code]
 const
   // Клиент WebView2 Runtime в EdgeUpdate. Данные для всех пользователей на 64-разрядной
@@ -191,7 +196,7 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM FreeTurn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   ServiceExe := ExpandConstant('{app}\FreeTurnService.exe');
   if FileExists(ServiceExe) then
-    Result := Exec(ServiceExe, 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)
+    Result := ExecAndLogOutput(ServiceExe, 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode, nil) and (ResultCode = 0)
   else
   begin
     // Файла нет, например его убрал антивирус. Удалению это мешать не должно: службу снимаем
