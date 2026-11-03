@@ -3,7 +3,7 @@
 // выводятся: в них бывают данные профилей.
 import { API } from "../bindings/github.com/vanbujhm/freeturn-windows/cmd/freeturn/index.js";
 import { describeApiError, toApiError } from "./state";
-import { notify, reconcileSelection, state } from "./store";
+import { loadStatusWith, notify, reconcileSelection, serial, state } from "./store";
 import { toast } from "./dom";
 
 export { API };
@@ -24,16 +24,20 @@ export async function loadProfiles(): Promise<void> {
   notify("profiles");
 }
 
-export async function loadSettings(): Promise<void> {
-  state.settings = await API.Settings();
-  reconcileSelection();
-  notify("settings");
+// Чтения настроек идут по очереди: ответ, запрошенный раньше, не придёт после более нового.
+const settingsQueue = serial();
+
+export function loadSettings(): Promise<void> {
+  return settingsQueue(async () => {
+    state.settings = await API.Settings();
+    reconcileSelection();
+    notify("settings");
+  });
 }
 
-export async function loadStatus(): Promise<void> {
-  state.status = await API.Status();
-  reconcileSelection();
-  notify("status");
+// Ответ Status не затирает событие, пришедшее за время запроса (см. loadStatusWith).
+export function loadStatus(): Promise<void> {
+  return loadStatusWith(() => API.Status());
 }
 
 export async function loadBanners(): Promise<void> {

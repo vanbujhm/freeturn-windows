@@ -8,8 +8,13 @@ import * as S from "../strings";
 
 const POWER = ["M12 3v8", "M6.3 6.8a8 8 0 1 0 11.4 0"];
 
+// PENDING_LIMIT_MS: дольше кнопка не ждёт смены состояния после нажатия.
+const PENDING_LIMIT_MS = 10_000;
+
 export function createHome(goto: Goto): Screen {
   let pending = false;
+  let pendingPhase = "";
+  let pendingTimer = 0;
   let view: StatusView = describeStatus(state.status);
 
   const updateText = h("span", { class: "grow" });
@@ -88,13 +93,18 @@ export function createHome(goto: Goto): Screen {
 
   async function onPower(): Promise<void> {
     if (pending || view.button === "disabled") return;
+    // Кнопка остаётся занятой, пока фаза не сменится или не пройдёт PENDING_LIMIT_MS: так
+    // она не мигает активной между ответом на вызов и событием состояния.
     pending = true;
+    pendingPhase = state.status.Phase;
+    pendingTimer = window.setTimeout(release, PENDING_LIMIT_MS);
     render();
     try {
       if (view.button === "disconnect") {
         await API.Disconnect();
       } else {
         if (!state.selectedId) {
+          release();
           toast(S.home.noProfiles, "error");
           goto("profiles");
           return;
@@ -102,12 +112,17 @@ export function createHome(goto: Goto): Screen {
         await API.Connect(state.selectedId);
       }
     } catch (e) {
+      release();
       toast(errorText(e), "error");
       if (toApiError(e).code === "incomplete") goto("profiles");
-    } finally {
-      pending = false;
-      render();
     }
+  }
+
+  // release снимает занятость кнопки и перерисовывает её.
+  function release(): void {
+    window.clearTimeout(pendingTimer);
+    pending = false;
+    render();
   }
 
   async function saveDiagnostics(): Promise<void> {
@@ -146,6 +161,10 @@ export function createHome(goto: Goto): Screen {
 
   function render(): void {
     const s = state.status;
+    if (pending && s.Phase !== pendingPhase) {
+      window.clearTimeout(pendingTimer);
+      pending = false;
+    }
     view = describeStatus(s);
     title.textContent = view.title;
     detail.textContent = view.detail;

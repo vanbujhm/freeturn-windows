@@ -2,15 +2,15 @@
 import { Events } from "@wailsio/runtime";
 import type { ImportPreview } from "../bindings/github.com/vanbujhm/freeturn-windows/cmd/freeturn/index.js";
 import "./style.css";
-import { API, loadBanners, loadProfiles, loadSettings, loadStatus } from "./api";
-import { h, icon } from "./dom";
+import { API, errorText, loadBanners, loadProfiles, loadSettings, loadStatus } from "./api";
+import { h, icon, toast } from "./dom";
 import { createHome } from "./screens/home";
 import { createJournal } from "./screens/journal";
 import { createProfiles } from "./screens/profiles";
 import { createRules } from "./screens/rules";
 import { createSettings } from "./screens/settings";
 import type { Status } from "./state";
-import { type Screen, type TabId, type UpdateInfo, notify, pushLog, reconcileSelection, state } from "./store";
+import { type Screen, type TabId, type UpdateInfo, notify, pushLog, setStatusFromEvent, state } from "./store";
 import * as S from "./strings";
 
 interface Tab {
@@ -69,15 +69,9 @@ function mount(root: HTMLElement): void {
 
 // События подписываются раньше первой загрузки, чтобы не потерять изменения между ними.
 function subscribeEvents(): void {
-  Events.On("status", (e) => {
-    state.status = e.data as Status;
-    reconcileSelection();
-    notify("status");
-  });
-  Events.On("service-down", () => {
-    state.status = { Phase: "error", Code: "service_down" };
-    notify("status");
-  });
+  // Одно значение Go приходит в e.data как есть, массивом только несколько (event_manager.go).
+  Events.On("status", (e) => setStatusFromEvent(e.data as Status));
+  Events.On("service-down", () => setStatusFromEvent({ Phase: "error", Code: "service_down" }));
   Events.On("log", (e) => pushLog(String(e.data ?? "")));
   Events.On("import", (e) => showImport(e.data as ImportPreview));
   Events.On("update", (e) => {
@@ -96,7 +90,8 @@ function showImport(p: ImportPreview | null): void {
 async function load(): Promise<void> {
   // Настройки первыми: по ним выбирается профиль последнего подключения.
   await loadSettings().catch(() => {});
-  await Promise.allSettled([loadProfiles(), loadStatus(), loadBanners()]);
+  const [profiles] = await Promise.allSettled([loadProfiles(), loadStatus(), loadBanners()]);
+  if (profiles.status === "rejected") toast(errorText(profiles.reason), "error");
   // Ссылка, с которой запустили программу, могла прийти раньше подписки на событие.
   showImport(await API.PendingImport().catch(() => null));
 }

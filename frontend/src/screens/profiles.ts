@@ -3,7 +3,7 @@ import { Clipboard } from "@wailsio/runtime";
 import type { ImportPreview, ProfileView } from "../../bindings/github.com/vanbujhm/freeturn-windows/cmd/freeturn/index.js";
 import { API, fail, loadBanners, loadProfiles, loadSettings } from "../api";
 import { confirmDialog, copyText, h, toast } from "../dom";
-import { describeFields } from "../state";
+import { describeFields, toApiError } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
 
@@ -91,6 +91,11 @@ export function createProfiles(): Screen {
       await loadProfiles();
     } catch (e) {
       fail(e);
+      // Токен устарел или уже использован: карточка подтверждения больше не нужна.
+      if (toApiError(e).code === "preview_expired") {
+        preview = null;
+        renderPreview();
+      }
       await loadBanners().catch(() => {});
     } finally {
       busy = false;

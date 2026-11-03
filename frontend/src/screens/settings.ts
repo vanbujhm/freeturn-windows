@@ -45,9 +45,18 @@ export function createSettings(): Screen {
     notice,
   );
 
+  // Пока одна запись идёт, переключатели недоступны: второе нажатие не может собрать
+  // настройки из устаревших значений и вернуть первое.
+  let busy = false;
+
   async function change(flag: Flag, input: HTMLInputElement): Promise<void> {
     const cur = state.settings;
-    if (!cur) return;
+    if (!cur || busy) {
+      render();
+      return;
+    }
+    busy = true;
+    render();
     const value = input.checked;
     const next = {
       ...cur,
@@ -60,14 +69,18 @@ export function createSettings(): Screen {
       },
     };
     try {
-      await API.SaveSettings(next);
-      state.settingsReset = false;
-    } catch (e) {
-      fail(e);
+      try {
+        await API.SaveSettings(next);
+        state.settingsReset = false;
+      } catch (e) {
+        fail(e);
+      }
+      // Что записалось на самом деле, показывает ответ службы, а не нажатие.
+      await loadSettings().catch(() => {});
+    } finally {
+      busy = false;
+      render();
     }
-    // Что записалось на самом деле, показывает ответ службы, а не нажатие.
-    await loadSettings().catch(() => {});
-    render();
   }
 
   function render(): void {
@@ -78,7 +91,7 @@ export function createSettings(): Screen {
       inputs.get("Autostart")!.checked = s.Autostart;
       inputs.get("ConnectOnLaunch")!.checked = s.ConnectOnLaunch;
     }
-    for (const input of inputs.values()) input.disabled = !s;
+    for (const input of inputs.values()) input.disabled = !s || busy;
     resetBanner.hidden = !state.settingsReset;
     notice.hidden = !["connecting", "captcha", "connected", "reconnecting"].includes(state.status.Phase);
   }

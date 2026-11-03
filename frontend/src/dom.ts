@@ -46,6 +46,7 @@ export function icon(...paths: string[]): SVGSVGElement {
   return svg;
 }
 
+const MAX_TOASTS = 3;
 let toastBox: HTMLElement | null = null;
 
 // toast показывает короткое сообщение внизу окна и убирает его само.
@@ -56,6 +57,8 @@ export function toast(text: string, kind: "info" | "error" = "info"): void {
   }
   const el = h("div", { class: `toast ${kind}`, text });
   toastBox.append(el);
+  // Больше трёх сообщений на экране не бывает: самые старые убираются.
+  while (toastBox.children.length > MAX_TOASTS) toastBox.firstElementChild?.remove();
   window.setTimeout(() => el.remove(), kind === "error" ? 7000 : 3500);
 }
 
