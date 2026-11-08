@@ -189,8 +189,8 @@ end;
 // Службу снимаем до любых изменений: если она не удалилась, удаление отменяется целиком, иначе
 // Inno стёр бы файлы и запись об установке, а служба, адаптер и маршруты остались бы без
 // способа повторить. Служба снимает туннель, удаляет себя, адаптер, маршруты и {app}\Data.
-// Вызывается после подтверждения удаления: InitializeUninstall идёт раньше вопроса, и ответ
-// «Нет» оставил бы программу без службы.
+// Вызывается на шаге удаления, а не в InitializeUninstall: там окно удаления ещё может
+// получить «Отмена», и программа осталась бы без службы.
 function RemoveService: Boolean;
 var
   ResultCode: Integer;
@@ -215,10 +215,201 @@ begin
     Log('FreeTurnService.exe uninstall не удался, код ' + IntToStr(ResultCode));
 end;
 
+// CmdLineHas сообщает, что в командной строке есть ключ Name.
+function CmdLineHas(const Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Name) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
+// FromUninstallForm: удаление запущено из окна удаления, см. InitializeUninstall.
+function FromUninstallForm: Boolean;
+begin
+  Result := CmdLineHas('/DELETEDATA') or CmdLineHas('/KEEPDATA');
+end;
+
+// AskUninstall показывает окно удаления с галочкой «Удалить данные приложения». True: человек
+// нажал «Удалить», WithData - отмечена ли галочка.
+function AskUninstall(var WithData: Boolean): Boolean;
+var
+  Form: TSetupForm;
+  Header: TPanel;
+  Title, Subtitle, Info, DirLabel, DataHint, Footer: TNewStaticText;
+  DirEdit: TNewEdit;
+  DataBox: TNewCheckBox;
+  TopLine, BottomLine: TBevel;
+  RemoveButton, CancelButton: TNewButton;
+  W: Integer;
+begin
+  Form := CreateCustomForm(480, 300, False, False);
+  try
+    Form.Caption := 'Удаление {#AppName}';
+
+    Header := TPanel.Create(Form);
+    Header.Parent := Form;
+    Header.Left := 0;
+    Header.Top := 0;
+    Header.Width := Form.ClientWidth;
+    Header.Height := ScaleY(58);
+    Header.BevelOuter := bvNone;
+    Header.ParentBackground := False;
+    Header.Color := clWindow;
+
+    Title := TNewStaticText.Create(Form);
+    Title.Parent := Header;
+    Title.Left := ScaleX(16);
+    Title.Top := ScaleY(12);
+    Title.Caption := 'Удаление {#AppName}';
+    Title.Font.Style := [fsBold];
+
+    Subtitle := TNewStaticText.Create(Form);
+    Subtitle.Parent := Header;
+    Subtitle.Left := ScaleX(28);
+    Subtitle.Top := Title.Top + Title.Height + ScaleY(4);
+    Subtitle.Caption := 'Удаление {#AppName} из компьютера.';
+
+    TopLine := TBevel.Create(Form);
+    TopLine.Parent := Form;
+    TopLine.Left := 0;
+    TopLine.Top := Header.Height;
+    TopLine.Width := Form.ClientWidth;
+    TopLine.Height := ScaleY(2);
+    TopLine.Shape := bsTopLine;
+
+    Info := TNewStaticText.Create(Form);
+    Info.Parent := Form;
+    Info.Left := ScaleX(16);
+    Info.Top := Header.Height + ScaleY(16);
+    Info.AutoSize := False;
+    Info.WordWrap := True;
+    Info.Width := Form.ClientWidth - ScaleX(32);
+    Info.Height := ScaleY(32);
+    Info.Caption := 'Программа {#AppName} будет удалена с компьютера вместе со службой и сетевым адаптером. ' +
+      'Нажмите «Удалить», чтобы продолжить.';
+
+    DirLabel := TNewStaticText.Create(Form);
+    DirLabel.Parent := Form;
+    DirLabel.Left := ScaleX(16);
+    DirLabel.Caption := 'Удаление из:';
+
+    DirEdit := TNewEdit.Create(Form);
+    DirEdit.Parent := Form;
+    DirEdit.Left := ScaleX(110);
+    DirEdit.Top := Info.Top + Info.Height + ScaleY(14);
+    DirEdit.Width := Form.ClientWidth - DirEdit.Left - ScaleX(16);
+    DirEdit.ReadOnly := True;
+    DirEdit.Color := clBtnFace;
+    DirEdit.TabStop := False;
+    DirEdit.Text := ExpandConstant('{app}');
+    DirLabel.Top := DirEdit.Top + (DirEdit.Height - DirLabel.Height) div 2;
+
+    DataBox := TNewCheckBox.Create(Form);
+    DataBox.Parent := Form;
+    DataBox.Left := ScaleX(16);
+    DataBox.Top := DirEdit.Top + DirEdit.Height + ScaleY(18);
+    DataBox.Width := Form.ClientWidth - ScaleX(32);
+    DataBox.Height := ScaleY(17);
+    DataBox.Caption := 'Удалить данные приложения';
+    DataBox.Checked := False;
+
+    DataHint := TNewStaticText.Create(Form);
+    DataHint.Parent := Form;
+    DataHint.Left := ScaleX(34);
+    DataHint.Top := DataBox.Top + DataBox.Height + ScaleY(2);
+    DataHint.AutoSize := False;
+    DataHint.WordWrap := True;
+    DataHint.Width := Form.ClientWidth - DataHint.Left - ScaleX(16);
+    DataHint.Height := ScaleY(30);
+    DataHint.Font.Color := clGrayText;
+    DataHint.Caption := 'Профили с ключами и настройки. Оставьте их, если собираетесь установить программу снова.';
+
+    RemoveButton := TNewButton.Create(Form);
+    RemoveButton.Parent := Form;
+    RemoveButton.Caption := 'Удалить';
+    RemoveButton.ModalResult := mrOk;
+    RemoveButton.Default := True;
+
+    CancelButton := TNewButton.Create(Form);
+    CancelButton.Parent := Form;
+    CancelButton.Caption := 'Отмена';
+    CancelButton.ModalResult := mrCancel;
+    CancelButton.Cancel := True;
+
+    W := Form.CalculateButtonWidth([RemoveButton.Caption, CancelButton.Caption]);
+    RemoveButton.Width := W;
+    CancelButton.Width := W;
+    RemoveButton.Height := ScaleY(23);
+    CancelButton.Height := ScaleY(23);
+    CancelButton.Left := Form.ClientWidth - ScaleX(16) - W;
+    RemoveButton.Left := CancelButton.Left - ScaleX(8) - W;
+    CancelButton.Top := Form.ClientHeight - ScaleY(12) - CancelButton.Height;
+    RemoveButton.Top := CancelButton.Top;
+
+    BottomLine := TBevel.Create(Form);
+    BottomLine.Parent := Form;
+    BottomLine.Left := 0;
+    BottomLine.Top := CancelButton.Top - ScaleY(12);
+    BottomLine.Width := Form.ClientWidth;
+    BottomLine.Height := ScaleY(2);
+    BottomLine.Shape := bsTopLine;
+
+    Footer := TNewStaticText.Create(Form);
+    Footer.Parent := Form;
+    Footer.Left := ScaleX(16);
+    Footer.Caption := '{#AppName} {#AppVersion}';
+    Footer.Font.Color := clGrayText;
+    Footer.Top := CancelButton.Top + (CancelButton.Height - Footer.Height) div 2;
+
+    Form.ActiveControl := RemoveButton;
+    Result := Form.ShowModal = mrOk;
+    WithData := DataBox.Checked;
+  finally
+    Form.Free;
+  end;
+end;
+
+// Стандартный вопрос «Удалить программу?» Inno задаёт после InitializeUninstall, и места для
+// галочки в нём нет. Поэтому вопрос заменяет окно удаления, а само удаление запускается заново
+// в режиме /SILENT: он показывает ход удаления, но не спрашивает. Выбор передаётся ключом
+// /DELETEDATA или /KEEPDATA, а этот запуск завершается, ничего не тронув. Новый запуск ждёт
+// пару секунд, пока этот процесс выйдет и отпустит файл журнала удаления.
+function InitializeUninstall: Boolean;
+var
+  WithData: Boolean;
+  Params: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  if UninstallSilent then
+    Exit;
+  Result := False;
+  if not AskUninstall(WithData) then
+    Exit;
+  if WithData then
+    Params := '/SILENT /DELETEDATA'
+  else
+    Params := '/SILENT /KEEPDATA';
+  if not Exec(ExpandConstant('{cmd}'),
+              '/c ping -n 3 127.0.0.1 >nul & start "" "' + ExpandConstant('{uninstallexe}') + '" ' + Params,
+              '', SW_HIDE, ewNoWait, ResultCode) then
+    MsgBox('Не удалось запустить удаление: ' + SysErrorMessage(ResultCode), mbError, MB_OK);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ProfilesDir: String;
 begin
+  // Тихое удаление не сообщает об успехе, а запущенное из окна удаления видит человек.
+  if (CurUninstallStep = usDone) and FromUninstallForm then
+    MsgBox('Программа {#AppName} удалена с компьютера.', mbInformation, MB_OK);
+
   if CurUninstallStep = usUninstall then
   begin
     if not RemoveService then
@@ -233,14 +424,11 @@ begin
     // Автозапуск пишет окно в раздел текущего пользователя.
     RegDeleteValue(HKCU, '{#RunKey}', 'FreeTurn');
 
-    // Профили с ключами лежат у пользователя, поэтому про них спрашиваем. Без вопроса
-    // (тихое удаление) ответ «Да».
+    // Профили с ключами и настройки лежат у пользователя. Удалять ли их, решает галочка в
+    // окне удаления (ключ /DELETEDATA или /KEEPDATA). Тихое удаление без ключа удаляет их,
+    // как и прежде.
     ProfilesDir := ExpandConstant('{localappdata}\FreeTurn');
-    if DirExists(ProfilesDir) then
-      if SuppressibleMsgBox(
-           'Удалить сохранённые профили и настройки FreeTurn?' + #13#10 + ProfilesDir + #13#10#13#10 +
-           'В профилях лежат ключи. Если вы собираетесь установить программу снова, ответьте «Нет».',
-           mbConfirmation, MB_YESNO, IDYES) = IDYES then
-        DelTree(ProfilesDir, True, True, True);
+    if DirExists(ProfilesDir) and not CmdLineHas('/KEEPDATA') then
+      DelTree(ProfilesDir, True, True, True);
   end;
 end;
