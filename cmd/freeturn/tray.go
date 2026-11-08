@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"image"
 	"image/color"
-	"image/png"
 	"sync"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"github.com/vanbujhm/freeturn-windows/internal/logo"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 )
 
@@ -93,7 +91,7 @@ func canDisconnect(l trayLook) bool { return l == lookOn || l == lookBusy || l =
 func newTray(app *application.App, act trayActions) *tray {
 	t := &tray{st: app.SystemTray.New(), look: lookDown, icons: map[trayLook][]byte{}}
 	for l, c := range lookColors {
-		t.icons[l] = circleIcon(c)
+		t.icons[l] = stateIcon(c)
 	}
 	t.menu = app.NewMenu()
 	t.toggle = t.menu.Add(trayConnect)
@@ -143,21 +141,5 @@ func (t *tray) setLook(l trayLook) {
 	})
 }
 
-// circleIcon рисует значок: цветной круг 32x32. Готовые значки появятся вместе с оформлением.
-func circleIcon(c color.RGBA) []byte {
-	const size, r = 32, 13.0
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			dx, dy := float64(x)+0.5-size/2, float64(y)+0.5-size/2
-			if dx*dx+dy*dy <= r*r {
-				img.SetRGBA(x, y, c)
-			}
-		}
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		panic(err) // кодирование в память не должно падать
-	}
-	return buf.Bytes()
-}
+// stateIcon рисует значок трея: белый знак FreeTurn на фоне цвета состояния.
+func stateIcon(c color.RGBA) []byte { return logo.TrayPNG(c) }

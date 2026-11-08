@@ -1,11 +1,11 @@
 ﻿# Собирает интерфейс, FreeTurn.exe, FreeTurnService.exe и установщик.
 #
-#   pwsh -File build.ps1 [-Version 0.9.0] [-UpdateRepo владелец/репозиторий] [-Iscc путь] [-SkipInstaller]
+#   pwsh -File build.ps1 [-Version 0.10.0] [-UpdateRepo владелец/репозиторий] [-Iscc путь] [-SkipInstaller]
 #
 # Без -Version номер берётся из файла VERSION в корне репозитория.
 #
-# Результат: build\FreeTurn.exe, build\FreeTurnService.exe, build\wintun.dll и
-# dist\FreeTurnSetup-<версия>.exe. С -SkipInstaller сборка останавливается после build\,
+# Результат: build\FreeTurn.exe, build\FreeTurnService.exe, build\wintun.dll,
+# build\freeturn.ico и dist\FreeTurnSetup-<версия>.exe. С -SkipInstaller сборка останавливается после build\,
 # Inno Setup для этого не нужен.
 #requires -Version 7
 param(
@@ -112,12 +112,43 @@ finally {
 }
 
 New-Item -ItemType Directory -Force -Path 'build' | Out-Null
-Remove-Item -LiteralPath 'build\FreeTurn.exe', 'build\FreeTurnService.exe', 'build\wintun.dll' -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath 'build\FreeTurn.exe', 'build\FreeTurnService.exe', 'build\wintun.dll', 'build\freeturn.ico' -Force -ErrorAction SilentlyContinue
 
-# Окно без консоли: -H=windowsgui. Тег devconsole в выпуск не входит никогда.
-$guiFlags = "-s -w -H=windowsgui -X main.version=$Version -X main.updateRepo=$UpdateRepo"
-Invoke-Native 'go build FreeTurn.exe' {
-    go build -trimpath -ldflags $guiFlags -o build/FreeTurn.exe ./cmd/freeturn
+# Иконку собирает internal/logo: крупные кадры из рисунка ленты, мелкие - плоский знак,
+# тот же, что в трее. Вместе с манифестом и сведениями о версии она уходит в ресурсы
+# FreeTurn.exe: Go подхватывает файл .syso из каталога пакета. Файл временный и удаляется
+# после сборки.
+Invoke-Native 'иконка' { go run ./internal/logo/gen -ico build/freeturn.ico }
+$versionInfo = @{
+    fixed = @{ file_version = "$Version.0"; product_version = "$Version.0" }
+    info  = @{
+        '0419' = @{
+            CompanyName      = 'FreeTurn'
+            FileDescription  = 'FreeTurn'
+            FileVersion      = $Version
+            InternalName     = 'FreeTurn'
+            LegalCopyright   = 'MIT License'
+            OriginalFilename = 'FreeTurn.exe'
+            ProductName      = 'FreeTurn'
+            ProductVersion   = $Version
+        }
+    }
+}
+$versionInfo | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'build\freeturn-info.json' -Encoding utf8NoBOM
+$syso = 'cmd\freeturn\rsrc_windows_amd64.syso'
+try {
+    Invoke-Native 'ресурсы FreeTurn.exe' {
+        & $wails generate syso -arch amd64 -icon build/freeturn.ico -manifest cmd/freeturn/freeturn.exe.manifest `
+            -info build/freeturn-info.json -out $syso
+    }
+    # Окно без консоли: -H=windowsgui. Тег devconsole в выпуск не входит никогда.
+    $guiFlags = "-s -w -H=windowsgui -X main.version=$Version -X main.updateRepo=$UpdateRepo"
+    Invoke-Native 'go build FreeTurn.exe' {
+        go build -trimpath -ldflags $guiFlags -o build/FreeTurn.exe ./cmd/freeturn
+    }
+}
+finally {
+    Remove-Item -LiteralPath $syso, 'build\freeturn-info.json' -Force -ErrorAction SilentlyContinue
 }
 Invoke-Native 'go build FreeTurnService.exe' {
     go build -trimpath -ldflags '-s -w' -o build/FreeTurnService.exe ./cmd/freeturn-service

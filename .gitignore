@@ -10,3 +10,4 @@ spikes/
 *.freeturn
 *.conf
 !third_party/**
+*.syso

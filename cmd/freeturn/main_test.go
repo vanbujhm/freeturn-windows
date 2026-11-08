@@ -79,7 +79,7 @@ func TestLookOfPhase(t *testing.T) {
 
 func TestTrayIconsDecode(t *testing.T) {
 	for l, c := range lookColors {
-		img, err := png.Decode(bytes.NewReader(circleIcon(c)))
+		img, err := png.Decode(bytes.NewReader(stateIcon(c)))
 		if err != nil {
 			t.Fatalf("вид %d: %v", l, err)
 		}

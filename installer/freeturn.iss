@@ -32,6 +32,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 CloseApplications=force
 UninstallDisplayIcon={app}\FreeTurn.exe
+; Иконку рисует build.ps1 (internal/logo) до компиляции установщика.
+SetupIconFile=build\freeturn.ico
+; После установки и удаления Проводник сбрасывает кэш значков. Без этого ярлыки поверх
+; прежней версии показывают старую иконку, пока кэш не обновится сам.
+ChangesAssociations=yes
 SourceDir={#RepoDir}
 OutputDir={#RepoDir}\dist
 OutputBaseFilename=FreeTurnSetup-{#AppVersion}
