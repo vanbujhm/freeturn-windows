@@ -13,9 +13,10 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/statefile"
 )
 
-// wantedOn - состояние после принятого подключения.
+// wantedOn - состояние после принятого подключения. KillSwitch пишется таким, каким его
+// держит подключение: когда через туннель идёт только список, блокировки нет.
 func wantedOn(o model.Options, boot int64) statefile.State {
-	return statefile.State{Wanted: true, KillSwitch: o.KillSwitch, AllowLAN: o.AllowLAN, BootUnix: boot}
+	return statefile.State{Wanted: true, KillSwitch: o.Blocks(), AllowLAN: o.AllowLAN, BootUnix: boot}
 }
 
 // wantedOff - состояние после отключения.

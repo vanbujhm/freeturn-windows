@@ -191,6 +191,7 @@ type fakeNet struct {
 	bypassPh model.Physical
 	allowed  []netip.Prefix
 	dns      []netip.Addr
+	listed   []netip.Prefix // последний вызов AddTunnelRoutes
 }
 
 func (f *fakeNet) FindPhysical(exclude uint64) (model.Physical, error) {
@@ -235,6 +236,19 @@ func (f *fakeNet) ApplyTunnelRoutes(_ uint64, allowed []netip.Prefix, dns []neti
 	f.allowed, f.dns = allowed, dns
 	f.mu.Unlock()
 	return f.log.hit("net.routes")
+}
+
+func (f *fakeNet) AddTunnelRoutes(_ uint64, p []netip.Prefix) error {
+	f.mu.Lock()
+	f.listed = slices.Clone(p)
+	f.mu.Unlock()
+	return f.log.hit("net.listed")
+}
+
+func (f *fakeNet) tunnelListed() []netip.Prefix {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.listed)
 }
 
 func (f *fakeNet) ClearTunnel(uint64) error { return f.log.hit("net.clear") }

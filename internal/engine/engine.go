@@ -135,8 +135,8 @@ func (s *session) addResolved(addrs []netip.Addr) bool {
 	return added
 }
 
-// bypass возвращает префиксы правил и адреса доменов как /32 и /128, без повторов.
-func (s *session) bypass() []netip.Prefix {
+// listed возвращает префиксы правил и адреса доменов как /32 и /128, без повторов.
+func (s *session) listed() []netip.Prefix {
 	out := slices.Clone(s.rules.Prefixes)
 	for _, a := range s.resolved {
 		if p := netip.PrefixFrom(a, a.BitLen()); !slices.Contains(out, p) {
@@ -144,6 +144,15 @@ func (s *session) bypass() []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// bypass возвращает то, что идёт мимо туннеля: список правил, если через туннель идёт не
+// только он.
+func (s *session) bypass() []netip.Prefix {
+	if s.req.Options.TunnelOnly() {
+		return nil
+	}
+	return s.listed()
 }
 
 // firewallOptions собирает разрешения блокировки для текущих адресов.
@@ -383,7 +392,11 @@ func (e *Engine) ArmBlock(o model.Options) error {
 	if busy {
 		return ErrBusy
 	}
-	err := e.fwApply(firewall.Options{AllowLAN: o.AllowLAN, Bypass: split.Compile(o.Rules).Prefixes})
+	var bypass []netip.Prefix
+	if !o.TunnelOnly() {
+		bypass = split.Compile(o.ActiveRules()).Prefixes
+	}
+	err := e.fwApply(firewall.Options{AllowLAN: o.AllowLAN, Bypass: bypass})
 	if err != nil {
 		// Окно всё равно должно прислать профиль, иначе туннель не вернётся.
 		e.logf(levelError, "блокировка не восстановлена: "+err.Error())
@@ -447,7 +460,7 @@ func (e *Engine) establish(s *session) error {
 	}
 	// Последняя проверка отмены позади. Сбой раньше этой строки это сбой подключения, он не
 	// оставляет новой блокировки. Дальше блокировка зависит только от выбора в подключении.
-	s.holdBlock = s.req.Options.KillSwitch
+	s.holdBlock = s.req.Options.Blocks()
 	if !s.holdBlock {
 		e.fwClear() // блокировка от прошлого подключения
 	}
@@ -464,7 +477,7 @@ func (e *Engine) prepare(s *session) error {
 	if err != nil {
 		return &failure{code: model.ErrBadProfile, msg: configMask(p.WGConfig).Mask(err.Error())}
 	}
-	rules := split.Compile(s.req.Options.Rules)
+	rules := split.Compile(s.req.Options.ActiveRules())
 
 	e.mu.Lock()
 	e.mask = secretmask.ForProfile(p, cfg)
@@ -475,7 +488,8 @@ func (e *Engine) prepare(s *session) error {
 		e.warn(model.WarnRuleSkipped, skip.Rule.Value)
 		e.logf(levelWarn, "правило пропущено ("+skip.Reason+"): "+skip.Rule.Value)
 	}
-	if len(cfg.DNS) == 0 {
+	// Когда через туннель идёт только список, DNS остаётся системным, и конфиг его не задаёт.
+	if len(cfg.DNS) == 0 && !s.req.Options.TunnelOnly() {
 		e.warn(model.WarnNoDNS, "")
 		e.logf(levelWarn, "в конфиге нет DNS, остаётся системный")
 	}
@@ -603,6 +617,9 @@ func (e *Engine) openTunnel(s *session) error {
 // Сбой любой части, включая блокировку, это сбой подключения: без блокировки туннель не
 // поднимается. Обратные операции кладутся до вызова, потому что SetBypass и
 // ApplyTunnelRoutes при ошибке могут оставить часть маршрутов.
+//
+// Когда через туннель идёт только список, в туннель ведут только его маршруты, а DNS
+// остаётся системным: адреса доменов служба узнаёт у него же, и браузер получает те же.
 func (e *Engine) applyNetwork(s *session) error {
 	if err := s.stopped(); err != nil {
 		return err
@@ -619,7 +636,7 @@ func (e *Engine) applyNetwork(s *session) error {
 	e.mu.Lock()
 	opts := s.firewallOptions()
 	e.mu.Unlock()
-	if s.req.Options.KillSwitch {
+	if s.req.Options.Blocks() {
 		if err := e.fwApply(opts); err != nil {
 			return failed(model.ErrAdapter, err)
 		}
@@ -637,10 +654,28 @@ func (e *Engine) applyNetwork(s *session) error {
 	}
 
 	s.push(func() { e.logFailure("снятие маршрутов туннеля", e.d.Net.ClearTunnel(s.luid)) })
+	if s.req.Options.TunnelOnly() {
+		if err := e.routeListed(s); err != nil {
+			return failed(model.ErrAdapter, err)
+		}
+		return s.stopped()
+	}
 	if err := e.d.Net.ApplyTunnelRoutes(s.luid, s.cfg.AllowedPrefixes(), s.cfg.DNS); err != nil {
 		return failed(model.ErrAdapter, err)
 	}
 	return s.stopped()
+}
+
+// routeListed ведёт список в туннель, когда через туннель идёт только он. В остальных режимах
+// ничего не делает. Маршруты только добавляются, поэтому повтор безопасен.
+func (e *Engine) routeListed(s *session) error {
+	if !s.req.Options.TunnelOnly() {
+		return nil
+	}
+	e.mu.Lock()
+	listed := s.listed()
+	e.mu.Unlock()
+	return e.d.Net.AddTunnelRoutes(s.luid, listed)
 }
 
 // resolveDomains разрешает домены одновременно, каждый отдельным вызовом: иначе один долгий

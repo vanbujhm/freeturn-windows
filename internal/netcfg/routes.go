@@ -178,6 +178,37 @@ func ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) er
 	return nil
 }
 
+// AddTunnelRoutes ведёт в туннель префиксы списка, когда через туннель идёт только он.
+// Маршрута по умолчанию и DNS адаптеру тогда не ставится. Маршрут, который уже есть, не
+// ошибка, поэтому вызов можно повторять с растущим списком. Без стека IPv6 на адаптере
+// (ERROR_NOT_FOUND) маршруты IPv6 пропускаются, как заглушка в ApplyTunnelRoutes.
+func AddTunnelRoutes(luid uint64, prefixes []netip.Prefix) error {
+	l := winipcfg.LUID(luid)
+	add := func(p netip.Prefix, nh netip.Addr) error { return l.AddRoute(p, nh, 0) }
+	routes4, routes6 := splitRoutes(planListed(prefixes))
+	if err := addRoutes(routes4, netip.IPv4Unspecified(), add); err != nil {
+		return fmt.Errorf("маршруты списка IPv4: %w", err)
+	}
+	if err := addRoutes(routes6, netip.IPv6Unspecified(), add); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
+		return fmt.Errorf("маршруты списка IPv6: %w", err)
+	}
+	return nil
+}
+
+// planListed обнуляет биты хоста и убирает неверные префиксы и повторы.
+func planListed(prefixes []netip.Prefix) []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range prefixes {
+		if !p.IsValid() {
+			continue
+		}
+		if p = p.Masked(); !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // ClearTunnel снимает с адаптера маршруты, DNS и адреса. Отсутствие семейства или
 // записи ошибкой не считается. FlushRoutes не прерывается на сбое и отдаёт последнюю ошибку:
 // удаление одного маршрута сносит связанные, и следующее удаление даёт ERROR_NOT_FOUND.

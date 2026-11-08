@@ -1,7 +1,7 @@
 // Настройки: четыре переключателя. Каждое нажатие сразу сохраняется.
 import { API, fail, loadSettings } from "../api";
 import { h } from "../dom";
-import { type SettingsFlag, withFlag } from "../state";
+import { type SettingsFlag, splitView, withFlag } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
 
@@ -24,6 +24,8 @@ export function createSettings(): Screen {
   const resetBanner = h("div", { class: "banner warn", hidden: true, text: S.settings.resetBanner });
   const notice = h("p", { class: "muted small-text", hidden: true, text: S.settings.appliesNext });
   const inputs = new Map<Flag, HTMLInputElement>();
+  // Когда через туннель идёт только список, защита от утечек не действует.
+  const killSwitchOff = h("span", { class: "small-text warn-text", text: S.settings.killSwitchOff, hidden: true });
 
   const rows = TOGGLES.map((t) => {
     const input = h("input", { type: "checkbox", class: "switch-input", id: `set-${t.flag}` });
@@ -32,7 +34,13 @@ export function createSettings(): Screen {
     return h(
       "label",
       { class: "card row between toggle", for: `set-${t.flag}` },
-      h("div", { class: "stack tight" }, h("strong", { text: t.title }), h("span", { class: "muted small-text", text: t.hint })),
+      h(
+        "div",
+        { class: "stack tight" },
+        h("strong", { text: t.title }),
+        h("span", { class: "muted small-text", text: t.hint }),
+        t.flag === "KillSwitch" && killSwitchOff,
+      ),
       h("span", { class: "switch" }, input, h("span", { class: "track" })),
     );
   });
@@ -85,6 +93,8 @@ export function createSettings(): Screen {
       inputs.get("Autostart")!.checked = s.Autostart;
       inputs.get("ConnectOnLaunch")!.checked = s.ConnectOnLaunch;
     }
+    const split = splitView(s?.Options);
+    killSwitchOff.hidden = !(s?.Options.KillSwitch && split.on && split.mode === "only");
     for (const input of inputs.values()) input.disabled = !s || busy;
     resetBanner.hidden = !state.settingsReset;
     notice.hidden = !["connecting", "captcha", "connected", "reconnecting"].includes(state.status.Phase);

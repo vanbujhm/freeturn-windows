@@ -56,7 +56,7 @@ export function describeWarning(w: Warning): string {
   return text ? text(value) : S.unknownWarning(value || w.Code);
 }
 
-// describeSkipReason возвращает причину, по которой служба пропустила правило обхода.
+// describeSkipReason возвращает причину, по которой служба пропустила правило маршрутизации.
 export function describeSkipReason(reason: string): string {
   return S.skipReasons[reason] ?? S.unknownSkipReason;
 }
@@ -167,7 +167,7 @@ interface FlagSettings {
 }
 
 // withFlag возвращает копию настроек, где один переключатель имеет новое значение.
-// Остальные поля, в том числе правила обхода, остаются как были.
+// Остальные поля, в том числе правила маршрутизации, остаются как были.
 export function withFlag<T extends FlagSettings>(cur: T, flag: SettingsFlag, value: boolean): T {
   return {
     ...cur,
@@ -177,6 +177,39 @@ export function withFlag<T extends FlagSettings>(cur: T, flag: SettingsFlag, val
       ...cur.Options,
       KillSwitch: flag === "KillSwitch" ? value : cur.Options.KillSwitch,
       AllowLAN: flag === "AllowLAN" ? value : cur.Options.AllowLAN,
+    },
+  };
+}
+
+// SplitMode повторяет model.SplitMode: "" список идёт напрямую, "only" через туннель только он.
+export type SplitMode = "" | "only";
+
+interface SplitOptions {
+  SplitOff?: boolean;
+  SplitMode?: string;
+}
+
+export interface SplitView {
+  on: boolean;
+  mode: SplitMode;
+}
+
+// splitView читает раздельное туннелирование из настроек. Незнакомый режим служба считает
+// обходом, окно показывает так же.
+export function splitView(o: SplitOptions | undefined): SplitView {
+  return { on: !o?.SplitOff, mode: o?.SplitMode === "only" ? "only" : "" };
+}
+
+// withSplit возвращает копию настроек с новым переключателем или режимом. Остальные поля,
+// в том числе список правил, остаются как были.
+export function withSplit<T extends { Options: SplitOptions }>(cur: T, patch: { on?: boolean; mode?: SplitMode }): T {
+  const view = splitView(cur.Options);
+  return {
+    ...cur,
+    Options: {
+      ...cur.Options,
+      SplitOff: !(patch.on ?? view.on),
+      SplitMode: patch.mode ?? view.mode,
     },
   };
 }

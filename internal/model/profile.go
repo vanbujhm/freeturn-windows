@@ -54,10 +54,44 @@ type Rule struct {
 	Value string
 }
 
+// SplitMode задаёт, куда идут адреса из списка правил.
+type SplitMode string
+
+const (
+	// SplitBypass: список идёт напрямую, остальное через туннель. Пустое значение тоже он.
+	SplitBypass SplitMode = ""
+	// SplitOnly: через туннель идёт только список, остальное напрямую.
+	SplitOnly SplitMode = "only"
+)
+
 // Options задаёт параметры одного подключения, не относящиеся к профилю.
+// Нулевые SplitOff и SplitMode дают прежнее поведение: список правил идёт мимо туннеля.
 type Options struct {
 	KillSwitch, AllowLAN bool
 	Rules                []Rule
+	// SplitOff выключает раздельное туннелирование: правила хранятся, но не действуют,
+	// и весь трафик идёт через туннель.
+	SplitOff  bool
+	SplitMode SplitMode
+}
+
+// ActiveRules возвращает правила, которые действуют в подключении.
+func (o Options) ActiveRules() []Rule {
+	if o.SplitOff {
+		return nil
+	}
+	return o.Rules
+}
+
+// TunnelOnly сообщает, что через туннель идёт только список правил.
+func (o Options) TunnelOnly() bool {
+	return !o.SplitOff && o.SplitMode == SplitOnly
+}
+
+// Blocks сообщает, что подключение держит блокировку. Когда через туннель идёт только список,
+// остальной трафик и должен идти напрямую, поэтому блокировки нет.
+func (o Options) Blocks() bool {
+	return o.KillSwitch && !o.TunnelOnly()
 }
 
 // ConnectRequest передаётся от окна службе при подключении.

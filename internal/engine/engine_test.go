@@ -1354,3 +1354,75 @@ func TestFirewallRefreshAfterDisableIsNoop(t *testing.T) {
 	}
 	h.wantNotCalled("fw.update")
 }
+
+// Выключенное раздельное туннелирование: правила хранятся, но не действуют.
+func TestSplitOffIgnoresRules(t *testing.T) {
+	h := newHarness(t)
+	h.res.answers["example.com"] = []netip.Addr{netip.MustParseAddr("198.51.100.7")}
+	req := testRequest()
+	req.Options.SplitOff = true
+	req.Options.SplitMode = model.SplitOnly
+	req.Options.Rules = []model.Rule{
+		{Kind: model.RuleSubnet, Value: "203.0.113.0/24"},
+		{Kind: model.RuleDomain, Value: "example.com"},
+	}
+	h.connect(req)
+	h.waitPhase(model.PhaseConnected)
+
+	h.wantNotCalled("resolve", "net.listed")
+	h.wantCalled("fw.enable", "net.routes")
+	if got := h.net.bypassed(); len(got) != 0 {
+		t.Errorf("SetBypass получил %v", got)
+	}
+	if got := h.fw.last().Bypass; len(got) != 0 {
+		t.Errorf("брандмауэр получил %v", got)
+	}
+}
+
+// Через туннель только список: маршрута по умолчанию, DNS и блокировки нет, обхода тоже.
+func TestTunnelOnlyRoutesList(t *testing.T) {
+	h := newHarness(t)
+	h.res.answers["example.com"] = []netip.Addr{netip.MustParseAddr("198.51.100.7")}
+	req := testRequest()
+	req.Profile.WGConfig = strings.Replace(req.Profile.WGConfig, "DNS = 198.51.100.53\n", "", 1)
+	req.Options.SplitMode = model.SplitOnly
+	req.Options.Rules = []model.Rule{
+		{Kind: model.RuleSubnet, Value: "203.0.113.0/24"},
+		{Kind: model.RuleDomain, Value: "example.com"},
+	}
+	h.connect(req)
+	st := h.waitPhase(model.PhaseConnected)
+
+	h.wantLog("protect.set", "core.start", "tunnel.open", "net.configure", "tunnel.handshake",
+		"resolve", "net.bypass", "net.listed")
+	want := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.7/32")}
+	if got := h.net.tunnelListed(); !slices.Equal(got, want) {
+		t.Errorf("AddTunnelRoutes получил %v", got)
+	}
+	if got := h.net.bypassed(); len(got) != 0 {
+		t.Errorf("SetBypass получил %v", got)
+	}
+	if len(st.Warnings) != 0 {
+		t.Errorf("предупреждения %+v", st.Warnings)
+	}
+}
+
+// Сбой маршрутов списка это сбой подключения, блокировки после него нет.
+func TestTunnelOnlyRoutesFail(t *testing.T) {
+	h := newHarness(t)
+	h.log.failOn("net.listed", errBoom)
+	req := subnetOnlyRequest()
+	h.connect(req)
+	st := h.waitPhase(model.PhaseError)
+	if st.Code != model.ErrAdapter {
+		t.Errorf("код %q", st.Code)
+	}
+	h.wantNotCalled("fw.enable")
+}
+
+func subnetOnlyRequest() model.ConnectRequest {
+	req := testRequest()
+	req.Options.SplitMode = model.SplitOnly
+	req.Options.Rules = []model.Rule{{Kind: model.RuleSubnet, Value: "203.0.113.0/24"}}
+	return req
+}

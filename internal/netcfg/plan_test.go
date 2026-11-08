@@ -472,3 +472,12 @@ func TestAddRoutesStopsOnError(t *testing.T) {
 		t.Fatalf("вызовов %d, ожидался 1", calls)
 	}
 }
+
+func TestPlanListedDedupAndMask(t *testing.T) {
+	in := append(pfx(t, "203.0.113.5/24", "203.0.113.0/24", "198.51.100.7/32", "2001:db8::7/128"), netip.Prefix{})
+	got := strs(planListed(in))
+	want := []string{"203.0.113.0/24", "198.51.100.7/32", "2001:db8::7/128"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

@@ -907,3 +907,28 @@ func TestUpdateInfoJSONShape(t *testing.T) {
 		t.Fatalf("%s, %v", b, err)
 	}
 }
+
+func TestSaveSettingsSplitMode(t *testing.T) {
+	e := newEnv(t)
+	s := e.api.Settings()
+	if s.Options.SplitOff || s.Options.SplitMode != model.SplitBypass {
+		t.Fatalf("по умолчанию %+v", s.Options)
+	}
+	s.Options.SplitOff = true
+	s.Options.SplitMode = model.SplitOnly
+	if err := e.api.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := profile.LoadSettings(filepath.Join(e.dir, "settings.json"))
+	if !saved.Options.SplitOff || saved.Options.SplitMode != model.SplitOnly {
+		t.Fatalf("в файле %+v", saved.Options)
+	}
+
+	s.Options.SplitMode = "что-то"
+	if err := e.api.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.api.Settings().Options.SplitMode; got != model.SplitBypass {
+		t.Fatalf("незнакомый режим сохранён как %q", got)
+	}
+}

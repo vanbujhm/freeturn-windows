@@ -1,12 +1,52 @@
-// Исключения: адреса, подсети и сайты, которые идут мимо туннеля.
+// Маршрутизация: раздельное туннелирование и список адресов, подсетей и сайтов. Список идёт
+// либо напрямую (остальное через туннель), либо через туннель (остальное напрямую).
 import type { Rule } from "../../bindings/github.com/vanbujhm/freeturn-windows/internal/model/models.js";
 import { API, fail, loadSettings } from "../api";
 import { h, toast } from "../dom";
+import { type SplitMode, splitView, withSplit } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
 
 export function createRules(): Screen {
   let busy = false;
+
+  const splitInput = h("input", { type: "checkbox", class: "switch-input", id: "rules-split" });
+  const splitHint = h("span", { class: "muted small-text" });
+  const splitRow = h(
+    "label",
+    { class: "card row between toggle", for: "rules-split" },
+    h("div", { class: "stack tight" }, h("strong", { text: S.rules.split }), splitHint),
+    h("span", { class: "switch" }, splitInput, h("span", { class: "track" })),
+  );
+
+  const modeInputs = new Map<SplitMode, HTMLInputElement>();
+  const modeOption = (mode: SplitMode, text: string) => {
+    const input = h("input", { type: "radio", name: "rules-mode", id: `rules-mode-${mode || "bypass"}`, value: mode });
+    modeInputs.set(mode, input);
+    input.addEventListener("change", () => {
+      if (input.checked) void saveSplit({ mode });
+    });
+    return h("label", { class: "segment" }, input, h("span", { text }));
+  };
+  const modeHint = h("span", { class: "muted small-text" });
+  const modeWarn = h("span", { class: "small-text warn-text", text: S.rules.modeOnlyKillSwitch, hidden: true });
+  const modeCard = h(
+    "div",
+    { class: "card stack" },
+    h(
+      "div",
+      { class: "row between wrap" },
+      h("strong", { text: S.rules.mode }),
+      h(
+        "div",
+        { class: "segmented", role: "radiogroup", "aria-label": S.rules.mode },
+        modeOption("", S.rules.modeBypass),
+        modeOption("only", S.rules.modeOnly),
+      ),
+    ),
+    modeHint,
+    modeWarn,
+  );
 
   const input = h("input", {
     class: "input",
@@ -24,30 +64,56 @@ export function createRules(): Screen {
     "section",
     { class: "screen" },
     h("h2", { class: "screen-title", text: S.rules.title }),
-    h("p", { class: "muted", text: S.rules.intro }),
+    splitRow,
+    modeCard,
     h("div", { class: "row" }, input, addBtn),
     notice,
     list,
     h("div", { class: "callout stack" }, ...S.rules.hint.map((t) => h("p", { class: "small-text", text: t }))),
   );
 
+  splitInput.addEventListener("change", () => void saveSplit({ on: splitInput.checked }));
   addBtn.addEventListener("click", () => void add());
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") void add();
   });
 
-  // save записывает список правил в настройки. Остальные поля берутся из текущих настроек.
-  async function save(next: Rule[]): Promise<boolean> {
-    const cur = state.settings;
-    if (!cur) return false;
+  // save записывает настройки и перечитывает их: что записалось на самом деле, показывает
+  // ответ службы, а не нажатие.
+  async function save(next: NonNullable<typeof state.settings>): Promise<boolean> {
     try {
-      await API.SaveSettings({ ...cur, Options: { ...cur.Options, Rules: next } });
-      await loadSettings();
+      await API.SaveSettings(next);
       return true;
     } catch (e) {
       fail(e);
       return false;
+    } finally {
+      await loadSettings().catch(() => {});
     }
+  }
+
+  // saveSplit меняет переключатель или режим. Пока запись идёт, элементы недоступны: второе
+  // нажатие не может собрать настройки из устаревших значений.
+  async function saveSplit(patch: { on?: boolean; mode?: SplitMode }): Promise<void> {
+    const cur = state.settings;
+    if (!cur || busy) {
+      render();
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      await save(withSplit(cur, patch));
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function saveRules(next: Rule[]): Promise<boolean> {
+    const cur = state.settings;
+    if (!cur) return false;
+    return save({ ...cur, Options: { ...cur.Options, Rules: next } });
   }
 
   async function add(): Promise<void> {
@@ -61,7 +127,7 @@ export function createRules(): Screen {
         toast(S.rules.duplicate, "error");
         return;
       }
-      if (await save([...rules, rule])) {
+      if (await saveRules([...rules, rule])) {
         input.value = "";
         toast(S.rules.added);
       }
@@ -69,6 +135,7 @@ export function createRules(): Screen {
       fail(e);
     } finally {
       busy = false;
+      render();
     }
   }
 
@@ -77,18 +144,33 @@ export function createRules(): Screen {
     busy = true;
     try {
       const rules = state.settings.Options.Rules ?? [];
-      await save(rules.filter((r) => !(r.Kind === rule.Kind && r.Value === rule.Value)));
+      await saveRules(rules.filter((r) => !(r.Kind === rule.Kind && r.Value === rule.Value)));
     } finally {
       busy = false;
+      render();
     }
   }
 
   function render(): void {
-    const rules = state.settings?.Options.Rules ?? [];
+    const s = state.settings;
+    const view = splitView(s?.Options);
+    splitInput.checked = view.on;
+    splitInput.disabled = !s || busy;
+    splitHint.textContent = view.on ? S.rules.splitHint : S.rules.splitOffHint;
+    for (const [mode, radio] of modeInputs) {
+      radio.checked = mode === view.mode;
+      radio.disabled = !s || busy || !view.on;
+    }
+    modeCard.classList.toggle("dim", !view.on);
+    modeHint.textContent = view.mode === "only" ? S.rules.modeOnlyHint : S.rules.modeBypassHint;
+    modeWarn.hidden = !(view.on && view.mode === "only" && s?.Options.KillSwitch);
+
     const live = ["connecting", "captcha", "connected", "reconnecting"].includes(state.status.Phase);
     notice.hidden = !live;
+    const rules = s?.Options.Rules ?? [];
     if (rules.length === 0) {
-      list.replaceChildren(h("p", { class: "muted center-text", text: S.rules.empty }));
+      const empty = view.on && view.mode === "only" ? S.rules.emptyOnly : S.rules.empty;
+      list.replaceChildren(h("p", { class: "muted center-text", text: empty }));
       return;
     }
     list.replaceChildren(

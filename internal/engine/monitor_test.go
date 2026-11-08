@@ -1486,3 +1486,41 @@ func lastIndex(list []string, name string) int {
 	}
 	return -1
 }
+
+// Через туннель только список: новые адреса домена уходят в маршруты туннеля, а не в обход.
+func TestTunnelOnlyDomainRefresh(t *testing.T) {
+	h := newHarness(t)
+	h.res.answers[testDomain] = []netip.Addr{firstAddr}
+	req := domainRequest()
+	req.Options.SplitMode = model.SplitOnly
+	from := h.up(req)
+
+	h.res.answer(testDomain, secondAddr)
+	h.e.Tick(time.Now().Add(domainRefresh))
+
+	h.wantSince(from, "tunnel.stats", "resolve", "net.bypass", "net.listed")
+	for _, a := range []netip.Addr{firstAddr, secondAddr} {
+		if !hasPrefix(h.net.tunnelListed(), a) {
+			t.Errorf("в туннеле нет %s: %v", a, h.net.tunnelListed())
+		}
+	}
+	if got := h.net.bypassed(); len(got) != 0 {
+		t.Errorf("обход %v", got)
+	}
+}
+
+// Смена сети повторяет маршруты списка: прошлый сбой мог их не поставить.
+func TestTunnelOnlyNetworkChanged(t *testing.T) {
+	h := newHarness(t)
+	req := subnetRequest()
+	req.Options.SplitMode = model.SplitOnly
+	from := h.up(req)
+
+	h.net.setPhysical(otherPhysical(), nil)
+	h.e.NetworkChanged()
+
+	h.wantSince(from, "protect.set", "net.bypass", "net.listed", "core.reconnect")
+	if !slices.Contains(h.net.tunnelListed(), ruleSubnet) {
+		t.Errorf("в туннеле %v", h.net.tunnelListed())
+	}
+}

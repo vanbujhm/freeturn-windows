@@ -14,7 +14,7 @@ const (
 	// staleHandshake - сколько ядро может считать себя подключённым без рукопожатия. Этот же
 	// срок выдерживается после Reconnect и Wake: им нужно время, чтобы дать результат.
 	staleHandshake = 3 * time.Minute
-	// domainRefresh - как часто домены из исключений разрешаются заново.
+	// domainRefresh - как часто домены из правил маршрутизации разрешаются заново.
 	domainRefresh = 5 * time.Minute
 )
 
@@ -84,7 +84,7 @@ func (e *Engine) networkLost(s *session) {
 	}
 }
 
-// moveTo переносит исключения на ph и переподключает ядро. Сбой переноса не фатален: домен
+// moveTo переносит маршруты списка на ph и переподключает ядро. Сбой переноса не фатален: домен
 // пойдёт через туннель, а сокетам ядра важнее новый интерфейс. Такой сбой чинит следующая
 // сверка, уже без Reconnect: постоянная ошибка маршрута иначе сбрасывала бы ядро на каждом
 // такте. Новый DNS без смены пути запоминается молча, он нужен только разрешению доменов.
@@ -104,7 +104,7 @@ func (e *Engine) moveTo(s *session, ph model.Physical) {
 		return
 	}
 
-	e.logf(levelInfo, "сеть сменилась, переносим исключения")
+	e.logf(levelInfo, "сеть сменилась, переносим маршруты списка")
 	e.d.Protect.SetInterface(ph.Index4, ph.Index6)
 	if returned {
 		// Windows снимает маршруты вместе с интерфейсом, а SetBypass добавляет только то,
@@ -115,17 +115,17 @@ func (e *Engine) moveTo(s *session, ph model.Physical) {
 	if s.stopped() != nil {
 		return
 	}
-	e.noteBypass(s, errors.Join(err, e.fwRefresh(opts)))
+	e.noteBypass(s, errors.Join(err, e.fwRefresh(opts), e.routeListed(s)))
 	if s.stopped() != nil {
 		return
 	}
 	e.nudge(s, e.d.Core.Reconnect, e.d.Now())
 }
 
-// noteBypass запоминает, дошли ли исключения до системы. Сбой повторит следующая сверка.
+// noteBypass запоминает, дошли ли маршруты списка до системы. Сбой повторит следующая сверка.
 func (e *Engine) noteBypass(s *session, err error) {
 	if err != nil {
-		e.logf(levelWarn, "исключения не применены: "+err.Error())
+		e.logf(levelWarn, "маршруты списка не применены: "+err.Error())
 	}
 	e.mu.Lock()
 	s.bypassDirty = err != nil
@@ -265,8 +265,8 @@ func (e *Engine) refreshDomains(s *session, now time.Time) {
 }
 
 // applyAddresses сначала разрешает адреса в блокировке, потом ставит маршруты, как шаг 5:
-// маршрут без разрешения увёл бы адрес из работающего туннеля в блокировку. SetBypass ставит
-// только недостающее, так что повтор после частичного сбоя безопасен.
+// маршрут без разрешения увёл бы адрес из работающего туннеля в блокировку. SetBypass и
+// routeListed ставят только недостающее, так что повтор после частичного сбоя безопасен.
 func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Options) {
 	err := e.fwRefresh(opts)
 	if s.stopped() != nil {
@@ -274,6 +274,9 @@ func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Opt
 	}
 	if err == nil {
 		err = e.d.Net.SetBypass(ph, opts.Bypass)
+	}
+	if err == nil {
+		err = e.routeListed(s)
 	}
 	e.noteBypass(s, err)
 }

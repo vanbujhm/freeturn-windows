@@ -560,10 +560,68 @@ textarea.input {
   gap: 8px;
 }
 
-/* Исключения, настройки, журнал. */
+/* Маршрутизация, настройки, журнал. */
 
 .rule {
   padding: 10px 14px;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.dim {
+  opacity: 0.6;
+}
+
+/* Выбор из двух вариантов: радиокнопки в виде сегментов. */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.segment {
+  position: relative;
+  cursor: pointer;
+}
+
+.segment input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.segment span {
+  display: block;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  transition: background 0.2s, color 0.2s;
+  pointer-events: none;
+}
+
+.segment input:checked + span {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.segment input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.segment input:disabled {
+  cursor: default;
 }
 
 .toggle {

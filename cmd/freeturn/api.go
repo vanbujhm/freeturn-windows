@@ -541,6 +541,10 @@ func (a *API) SaveSettings(s profile.Settings) error {
 		return rerr
 	}
 	s.Options.Rules = rules
+	// Незнакомый режим служба поняла бы как обход, окно показало бы иначе.
+	if s.Options.SplitMode != model.SplitOnly {
+		s.Options.SplitMode = model.SplitBypass
+	}
 
 	if s.Autostart != cur.Autostart {
 		if err := a.setAutostart(s.Autostart); err != nil {

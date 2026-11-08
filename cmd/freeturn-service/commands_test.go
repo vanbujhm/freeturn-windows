@@ -24,6 +24,11 @@ func TestWantedTransitions(t *testing.T) {
 	if off := wantedOff(on); !reflect.DeepEqual(off, want) {
 		t.Errorf("wantedOff = %+v", off)
 	}
+	// Через туннель только список: блокировки нет, после падения службы её не возвращаем.
+	only := wantedOn(model.Options{KillSwitch: true, SplitMode: model.SplitOnly}, 1000)
+	if only.KillSwitch {
+		t.Errorf("wantedOn в режиме списка = %+v", only)
+	}
 }
 
 // fakeTunnel стоит на месте движка за командами канала.

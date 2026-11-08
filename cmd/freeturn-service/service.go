@@ -159,6 +159,10 @@ func (sysNet) ConfigureInterface(luid uint64, addrs []netip.Prefix, mtu int) err
 	return netcfg.ConfigureInterface(luid, addrs, mtu)
 }
 
+func (sysNet) AddTunnelRoutes(luid uint64, p []netip.Prefix) error {
+	return netcfg.AddTunnelRoutes(luid, p)
+}
+
 func (sysNet) ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) error {
 	return netcfg.ApplyTunnelRoutes(luid, allowed, dns)
 }

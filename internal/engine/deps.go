@@ -38,6 +38,9 @@ type Network interface {
 	FindPhysical(exclude uint64) (model.Physical, error)
 	ConfigureInterface(luid uint64, addrs []netip.Prefix, mtu int) error
 	ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) error
+	// AddTunnelRoutes добавляет в туннель маршруты к префиксам. Нужен, когда через туннель
+	// идёт только список: маршрута по умолчанию тогда нет, DNS адаптеру не задаётся.
+	AddTunnelRoutes(luid uint64, p []netip.Prefix) error
 	ClearTunnel(luid uint64) error
 	SetBypass(ph model.Physical, p []netip.Prefix) error
 	ClearBypass() error
