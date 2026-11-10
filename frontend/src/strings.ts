@@ -219,6 +219,9 @@ export const rules = {
   empty: "Список пуст",
   emptyOnly: "Список пуст: через VPN сейчас ничего не пойдёт.",
   remove: "Убрать",
+  commentPlaceholder: "Комментарий",
+  editComment: "Комментарий",
+  ruleOn: "Правило действует",
   duplicate: "Такое правило уже есть",
   added: "Правило добавлено",
   hint: [

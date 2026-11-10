@@ -50,13 +50,26 @@ export function createRules(): Screen {
 
   const input = h("input", {
     class: "input",
+    id: "rules-value",
     type: "text",
     placeholder: S.rules.placeholder,
     autocomplete: "off",
     spellcheck: "false",
     "aria-label": S.rules.placeholder,
   });
+  const commentInput = h("input", {
+    class: "input",
+    id: "rules-comment",
+    type: "text",
+    maxlength: "80",
+    placeholder: S.rules.commentPlaceholder,
+    autocomplete: "off",
+    "aria-label": S.rules.commentPlaceholder,
+  });
   const addBtn = h("button", { class: "btn primary", type: "button", text: S.rules.add });
+  // Открытое поле комментария одно. Оно живёт между перерисовками, чтобы ввод не терялся.
+  let editing: Rule | null = null;
+  let editInput: HTMLInputElement | null = null;
   const notice = h("p", { class: "muted small-text", text: S.rules.appliesNext, hidden: true });
   const list = h("div", { class: "stack" });
 
@@ -66,7 +79,7 @@ export function createRules(): Screen {
     h("h2", { class: "screen-title", text: S.rules.title }),
     splitRow,
     modeCard,
-    h("div", { class: "row" }, input, addBtn),
+    h("div", { class: "row wrap" }, input, commentInput, addBtn),
     notice,
     list,
     h("div", { class: "callout stack" }, ...S.rules.hint.map((t) => h("p", { class: "small-text", text: t }))),
@@ -74,9 +87,11 @@ export function createRules(): Screen {
 
   splitInput.addEventListener("change", () => void saveSplit({ on: splitInput.checked }));
   addBtn.addEventListener("click", () => void add());
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") void add();
-  });
+  for (const field of [input, commentInput]) {
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void add();
+    });
+  }
 
   // save записывает настройки и перечитывает их: что записалось на самом деле, показывает
   // ответ службы, а не нажатие.
@@ -127,8 +142,10 @@ export function createRules(): Screen {
         toast(S.rules.duplicate, "error");
         return;
       }
-      if (await saveRules([...rules, rule])) {
+      const comment = commentInput.value.trim();
+      if (await saveRules([...rules, comment ? { ...rule, Comment: comment } : rule])) {
         input.value = "";
+        commentInput.value = "";
         toast(S.rules.added);
       }
     } catch (e) {
@@ -149,6 +166,91 @@ export function createRules(): Screen {
       busy = false;
       render();
     }
+  }
+
+  const same = (a: Rule, b: Rule) => a.Kind === b.Kind && a.Value === b.Value;
+
+  // updateRule меняет одно правило, найденное по виду и значению.
+  async function updateRule(rule: Rule, patch: Partial<Rule>): Promise<void> {
+    if (busy || !state.settings) {
+      render();
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      const rules = state.settings.Options.Rules ?? [];
+      await saveRules(rules.map((r) => (same(r, rule) ? { ...r, ...patch } : r)));
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  function startEdit(rule: Rule): void {
+    const field = h("input", {
+      class: "input rule-comment-input",
+      type: "text",
+      maxlength: "80",
+      placeholder: S.rules.commentPlaceholder,
+      "aria-label": `${S.rules.editComment}: ${rule.Value}`,
+    });
+    field.value = rule.Comment ?? "";
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const value = field.value.trim();
+        editing = editInput = null;
+        void updateRule(rule, { Comment: value });
+      } else if (e.key === "Escape") {
+        editing = editInput = null;
+        render();
+      }
+    });
+    editing = rule;
+    editInput = field;
+    render();
+    field.focus();
+  }
+
+  function ruleCard(r: Rule): HTMLElement {
+    const s = state.settings;
+    const toggle = h("input", { type: "checkbox", class: "switch-input", "aria-label": `${S.rules.ruleOn}: ${r.Value}` });
+    toggle.checked = !r.Off;
+    toggle.disabled = !s || busy;
+    toggle.addEventListener("change", () => void updateRule(r, { Off: !toggle.checked }));
+    const edited = editing !== null && same(editing, r);
+    const comment = edited
+      ? editInput
+      : r.Comment
+        ? h("span", { class: "muted small-text rule-comment", text: r.Comment })
+        : null;
+    return h(
+      "div",
+      { class: r.Off ? "card row between rule dim" : "card row between rule" },
+      h("label", { class: "switch" }, toggle, h("span", { class: "track" })),
+      h(
+        "div",
+        { class: "stack tight grow" },
+        h("span", { class: "mono", text: r.Value }),
+        h("span", { class: "label", text: S.kinds[r.Kind] ?? r.Kind }),
+        comment,
+      ),
+      h("button", {
+        class: "btn plain-text rule-edit",
+        type: "button",
+        text: S.rules.editComment,
+        disabled: !s || busy,
+        "aria-label": `${S.rules.editComment}: ${r.Value}`,
+        onclick: () => startEdit(r),
+      }),
+      h("button", {
+        class: "btn danger-text",
+        type: "button",
+        text: S.rules.remove,
+        "aria-label": `${S.rules.remove}: ${r.Value}`,
+        onclick: () => void remove(r),
+      }),
+    );
   }
 
   function render(): void {
@@ -173,22 +275,7 @@ export function createRules(): Screen {
       list.replaceChildren(h("p", { class: "muted center-text", text: empty }));
       return;
     }
-    list.replaceChildren(
-      ...rules.map((r) =>
-        h(
-          "div",
-          { class: "card row between rule" },
-          h("div", { class: "stack tight" }, h("span", { class: "mono", text: r.Value }), h("span", { class: "label", text: S.kinds[r.Kind] ?? r.Kind })),
-          h("button", {
-            class: "btn danger-text",
-            type: "button",
-            text: S.rules.remove,
-            "aria-label": `${S.rules.remove}: ${r.Value}`,
-            onclick: () => void remove(r),
-          }),
-        ),
-      ),
-    );
+    list.replaceChildren(...rules.map(ruleCard));
   }
 
   subscribe("settings", render);

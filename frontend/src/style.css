@@ -323,6 +323,11 @@ textarea {
   color: var(--bad);
 }
 
+.btn.plain-text {
+  background: none;
+  color: var(--muted);
+}
+
 .btn:hover:not(:disabled) {
   filter: brightness(0.96);
 }
@@ -564,6 +569,11 @@ textarea.input {
 
 .rule {
   padding: 10px 14px;
+  gap: 12px;
+}
+
+.rule-comment-input {
+  margin-top: 4px;
 }
 
 .row.wrap {
