@@ -34,13 +34,18 @@ type stub struct {
 	probed         string
 	hops           []model.ProbeHop
 	probeErr       error
+	probeGate      chan struct{} // если задан, Probe ждёт закрытия
 }
 
 func (s *stub) Probe(value string) ([]model.ProbeHop, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.probed = value
-	return s.hops, s.probeErr
+	gate, hops, err := s.probeGate, s.hops, s.probeErr
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	return hops, err
 }
 
 func (s *stub) Connect(r model.ConnectRequest) error {
@@ -692,5 +697,35 @@ func TestProbeOtherError(t *testing.T) {
 	_, err := dial(t, path, nil).Probe("10.0.0.0/8")
 	if err == nil || errors.Is(err, ErrNotConnected) || err.Error() != "проверяется адрес" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProbeDoesNotBlockOtherCommands(t *testing.T) {
+	gate := make(chan struct{})
+	h := &stub{probeGate: gate, status: model.Status{Phase: model.PhaseConnected}}
+	_, path := startServer(t, h)
+	c := dial(t, path, nil)
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Probe("example.com")
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // Probe дошёл до службы и ждёт
+	st := make(chan model.Status, 1)
+	go func() {
+		s, _ := c.Status()
+		st <- s
+	}()
+	select {
+	case s := <-st:
+		if s.Phase != model.PhaseConnected {
+			t.Fatalf("Status = %+v", s)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Status ждёт, пока идёт Probe")
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

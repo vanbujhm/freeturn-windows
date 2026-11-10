@@ -128,19 +128,20 @@ describe("проверка адреса", () => {
     await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
   });
 
-  test("устаревший ответ отбрасывается", async () => {
+  test("повторный запуск во время проверки игнорируется", async () => {
     let first!: (v: unknown) => void;
     check.mockImplementationOnce(() => new Promise((r) => (first = r)));
-    check.mockResolvedValueOnce(result({ Rules: explanation({ SplitOff: true, Verdict: "tunnel", Match: empty }) }));
     const el = mount();
     const input = el.querySelector<HTMLInputElement>("#check-value")!;
+    const btn = el.querySelector<HTMLButtonElement>(".check-run")!;
     input.value = "1.1.1.1";
-    el.querySelector<HTMLButtonElement>(".check-run")!.click();
+    btn.click();
+    expect(btn.disabled).toBe(true);
     input.value = "2.2.2.2";
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-    await vi.waitFor(() => expect(text(el)).toContain(S.check.splitOff));
+    expect(check).toHaveBeenCalledTimes(1);
     first(result());
-    await Promise.resolve();
-    expect(text(el)).toContain(S.check.splitOff);
+    await vi.waitFor(() => expect(btn.disabled).toBe(false));
+    expect(check).toHaveBeenCalledWith("1.1.1.1");
   });
 });

@@ -195,18 +195,42 @@ func (c *srvClient) readLoop() {
 		if json.Unmarshal(sc.Bytes(), &req) != nil || req.Type != typeReq {
 			return
 		}
+		// Probe разрешает домен до нескольких секунд. Он идёт отдельно, чтобы не держать
+		// Disconnect и другие команды этого клиента: ответы сопоставляются по id.
+		if req.Method == methodProbe {
+			go func() {
+				if !c.respond(c.probe(req)) {
+					c.close()
+				}
+			}()
+			continue
+		}
 		resp, ok := c.handle(req)
-		if !ok {
-			return
-		}
-		line, err := json.Marshal(resp)
-		if err != nil {
-			return
-		}
-		if !c.out.pushResponse(append(line, '\n')) {
+		if !ok || !c.respond(resp) {
 			return
 		}
 	}
+}
+
+// respond ставит ответ в очередь записи. false: клиент не читает или уже закрыт.
+func (c *srvClient) respond(resp response) bool {
+	line, err := json.Marshal(resp)
+	if err != nil {
+		return false
+	}
+	return c.out.pushResponse(append(line, '\n'))
+}
+
+// probe выполняет команду Probe.
+func (c *srvClient) probe(req request) response {
+	resp := response{Type: typeResp, ID: req.ID}
+	hops, err := c.srv.h.Probe(req.Probe)
+	if err != nil {
+		resp.Err = err.Error()
+	} else {
+		resp.Hops = hops
+	}
+	return resp
 }
 
 // handle выполняет одну команду. false: запрос составлен неверно, клиента надо отключить.
@@ -227,13 +251,6 @@ func (c *srvClient) handle(req request) (response, bool) {
 		resp.Status = &st
 	case methodGetLogs:
 		resp.Logs = c.srv.h.Logs()
-	case methodProbe:
-		hops, err := c.srv.h.Probe(req.Probe)
-		if err != nil {
-			resp.Err = err.Error()
-		} else {
-			resp.Hops = hops
-		}
 	default:
 		resp.Err = "неизвестная команда"
 	}

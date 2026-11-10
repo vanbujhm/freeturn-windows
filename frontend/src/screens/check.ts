@@ -22,20 +22,23 @@ export function createCheck(): HTMLElement {
   });
   const runBtn = h("button", { class: "btn secondary check-run", type: "button", text: S.check.run });
   const out = h("div", { class: "stack tight check-result", "aria-live": "polite" });
-  // seq растёт с каждым запросом: ответ на устаревший запрос не затирает новый.
-  let seq = 0;
+  // Проверка домена может занять секунды. Пока она идёт, новая не начинается: служба не
+  // копит запросы, а ответ всегда относится к последнему запуску.
+  let running = false;
 
   async function run(): Promise<void> {
     const value = input.value.trim();
-    if (!value) return;
-    const mine = ++seq;
+    if (!value || running) return;
+    running = true;
+    runBtn.disabled = true;
     try {
-      const res = await API.CheckAddress(value);
-      if (mine === seq) out.replaceChildren(...render(res));
+      out.replaceChildren(...render(await API.CheckAddress(value)));
     } catch (e) {
-      if (mine !== seq) return;
       out.replaceChildren();
       fail(e);
+    } finally {
+      running = false;
+      runBtn.disabled = false;
     }
   }
 
