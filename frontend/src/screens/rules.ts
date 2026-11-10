@@ -3,6 +3,7 @@
 import type { Rule } from "../../bindings/github.com/vanbujhm/freeturn-windows/internal/model/models.js";
 import { API, fail, loadSettings } from "../api";
 import { h, toast } from "../dom";
+import { createCheck } from "./check";
 import { type SplitMode, splitView, withSplit } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
@@ -79,6 +80,7 @@ export function createRules(): Screen {
     h("h2", { class: "screen-title", text: S.rules.title }),
     splitRow,
     modeCard,
+    createCheck(),
     h("div", { class: "row wrap" }, input, commentInput, addBtn),
     notice,
     list,

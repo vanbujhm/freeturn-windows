@@ -572,6 +572,15 @@ textarea.input {
   gap: 12px;
 }
 
+.check-hop {
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.check-hop.mismatch {
+  background: var(--warn-soft);
+}
+
 .rule-comment-input {
   margin-top: 4px;
 }
