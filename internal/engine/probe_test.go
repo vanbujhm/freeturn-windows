@@ -55,7 +55,7 @@ func TestProbeIP(t *testing.T) {
 
 func TestProbeDomain(t *testing.T) {
 	h := connected(t)
-	h.res.answer("example.com", ip2, ip3)
+	h.tres.answers["example.com"] = []netip.Addr{ip2, ip3} // имя не в списке: через туннель
 	h.net.setRoutes(map[netip.Addr]uint64{ip2: 7, ip3: 99}, nil)
 	got, err := h.e.Probe(context.Background(), "Example.com")
 	if err != nil {
@@ -107,7 +107,7 @@ func TestProbeLocalAndOutside(t *testing.T) {
 	h.net.setRoutes(map[netip.Addr]uint64{lan: 7, outside: 7, inside: testLUID}, nil)
 	h.net.setOnLink(map[netip.Addr]bool{lan: true})
 	for _, c := range []struct {
-		addr            netip.Addr
+		addr             netip.Addr
 		local, isOutside bool
 	}{{lan, true, true}, {outside, false, true}, {inside, false, false}} {
 		got, err := h.e.Probe(context.Background(), c.addr.String())
@@ -131,5 +131,71 @@ func TestProbeOutsideIgnoredInTunnelOnly(t *testing.T) {
 	got, err := h.e.Probe(context.Background(), "1.1.1.1")
 	if err != nil || len(got) != 1 || got[0].Outside {
 		t.Fatalf("Probe = %+v, %v", got, err)
+	}
+}
+
+// probeSide поднимает сессию и проверяет, каким разрешителем Probe спросил домен.
+func probeSide(t *testing.T, opts model.Options, dns string, domain string, wantTunnel bool) {
+	t.Helper()
+	h := newHarness(t)
+	req := testRequest()
+	req.Options = opts
+	req.Profile.WGConfig = wgConfig(dns)
+	h.connect(req)
+	h.waitPhase(model.PhaseConnected)
+	h.res.answer(domain, ip2)
+	h.tres.answers[domain] = []netip.Addr{ip3}
+	physBefore := h.log.count("resolve")
+	got, err := h.e.Probe(context.Background(), domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaTunnel := slices.Contains(h.tres.called(), domain)
+	viaPhys := h.log.count("resolve") > physBefore
+	if viaTunnel != wantTunnel || viaPhys == wantTunnel {
+		t.Fatalf("через туннель %v, через физический DNS %v, ждали туннель %v", viaTunnel, viaPhys, wantTunnel)
+	}
+	want := ip2
+	if wantTunnel {
+		want = ip3
+		if h.tres.luid != testLUID || !slices.Equal(h.tres.servers, []netip.Addr{netip.MustParseAddr(dns)}) {
+			t.Fatalf("запрос через туннель: luid %x, серверы %v", h.tres.luid, h.tres.servers)
+		}
+	}
+	if len(got) != 1 || got[0].Addr != want {
+		t.Fatalf("Probe = %+v", got)
+	}
+}
+
+func TestProbeResolverSide(t *testing.T) {
+	rules := []model.Rule{{Value: "direct.example"}}
+	cases := []struct {
+		name   string
+		opts   model.Options
+		dns    string
+		domain string
+		tunnel bool
+	}{
+		{"обход: имя не в списке идёт через туннель", model.Options{Rules: rules}, "198.51.100.53", "other.example", true},
+		{"обход: имя из списка через физический DNS", model.Options{Rules: rules}, "198.51.100.53", "direct.example", false},
+		{"только список: имя из списка через туннель", model.Options{Rules: rules, SplitMode: model.SplitOnly}, "198.51.100.53", "direct.example", true},
+		{"только список: остальное через физический DNS", model.Options{Rules: rules, SplitMode: model.SplitOnly}, "198.51.100.53", "other.example", false},
+		{"раздельное выключено: через туннель", model.Options{Rules: rules, SplitOff: true}, "198.51.100.53", "direct.example", true},
+		{"в конфиге нет DNS: физический", model.Options{Rules: rules}, "", "other.example", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { probeSide(t, c.opts, c.dns, c.domain, c.tunnel) })
+	}
+}
+
+func TestProbeNoTunnelResolverDoesNotLeak(t *testing.T) {
+	h := newHarness(t, func(d *Deps) { d.TunnelResolver = nil })
+	h.connect(testRequest())
+	h.waitPhase(model.PhaseConnected)
+	h.res.answer("other.example", ip2)
+	before := h.log.count("resolve")
+	got, err := h.e.Probe(context.Background(), "other.example")
+	if err != nil || len(got) != 0 || h.log.count("resolve") != before {
+		t.Fatalf("Probe = %+v, %v; физический DNS спрошен %d раз", got, err, h.log.count("resolve")-before)
 	}
 }

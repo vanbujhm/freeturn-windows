@@ -169,8 +169,11 @@ func newEngine(coreDir string, debug bool, logs *serviceLog, relay *eventRelay, 
 		FW:       sysFirewall{},
 		Protect:  prot,
 		Resolver: split.NewResolver(prot.Protect),
-		FreePort: corehost.FreePort,
-		Classify: corehost.Classify,
+		// Проверка адреса спрашивает имена, трафик которых идёт через туннель, у DNS конфига
+		// через адаптер туннеля.
+		TunnelResolver: sysTunnelResolver{},
+		FreePort:       corehost.FreePort,
+		Classify:       corehost.Classify,
 		OnChange: func(st model.Status) {
 			relay.send(ipc.Event{Kind: ipc.KindStatus, Status: &st})
 		},

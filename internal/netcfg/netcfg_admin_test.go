@@ -166,6 +166,12 @@ func TestBestRoute(t *testing.T) {
 	if row.Type != winipcfg.IfTypeSoftwareLoopback {
 		t.Fatalf("127.0.0.1 идёт через интерфейс типа %d, ожидался loopback", row.Type)
 	}
+	if i4, _ := InterfaceIndexes(luid); i4 == 0 || i4 != row.InterfaceIndex {
+		t.Fatalf("InterfaceIndexes(loopback) = %d, у интерфейса %d", i4, row.InterfaceIndex)
+	}
+	if i4, i6 := InterfaceIndexes(0); i4 != 0 || i6 != 0 {
+		t.Fatalf("InterfaceIndexes(0) = %d, %d", i4, i6)
+	}
 
 	ph, err := FindPhysical(0)
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
+	"github.com/vanbujhm/freeturn-windows/internal/protect"
+	"github.com/vanbujhm/freeturn-windows/internal/split"
 	"github.com/vanbujhm/freeturn-windows/internal/tunnel"
 	"github.com/vanbujhm/freeturn-windows/internal/wgconf"
 )
@@ -156,6 +158,16 @@ func (sysNet) FindPhysical(exclude uint64) (model.Physical, error) {
 }
 
 func (sysNet) BestRoute(dst netip.Addr) (uint64, bool, error) { return netcfg.BestRoute(dst) }
+
+// sysTunnelResolver разрешает домен через DNS конфига по сокетам, привязанным к адаптеру
+// туннеля. Привязка своя на каждый запрос: общий Protector служит физическому интерфейсу.
+type sysTunnelResolver struct{}
+
+func (sysTunnelResolver) ResolveTunnel(ctx context.Context, domain string, luid uint64, servers []netip.Addr) []netip.Addr {
+	p := protect.New()
+	p.SetInterface(netcfg.InterfaceIndexes(luid))
+	return split.NewResolver(p.Protect).Resolve(ctx, []string{domain}, model.Physical{DNS: servers})
+}
 
 func (sysNet) ConfigureInterface(luid uint64, addrs []netip.Prefix, mtu int) error {
 	return netcfg.ConfigureInterface(luid, addrs, mtu)

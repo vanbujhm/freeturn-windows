@@ -191,7 +191,7 @@ type fakeNet struct {
 	bypassPh model.Physical
 	allowed  []netip.Prefix
 	dns      []netip.Addr
-	listed   []netip.Prefix // последний вызов AddTunnelRoutes
+	listed   []netip.Prefix        // последний вызов AddTunnelRoutes
 	routes   map[netip.Addr]uint64 // ответы BestRoute
 	routeErr map[netip.Addr]error
 	onLink   map[netip.Addr]bool
@@ -396,6 +396,29 @@ var (
 )
 
 // testKey собирает ключ из 32 одинаковых байтов.
+// fakeTunnelResolver запоминает запросы через туннель и отвечает заданными адресами.
+type fakeTunnelResolver struct {
+	mu      sync.Mutex
+	answers map[string][]netip.Addr
+	calls   []string // домены
+	luid    uint64
+	servers []netip.Addr
+}
+
+func (f *fakeTunnelResolver) ResolveTunnel(_ context.Context, domain string, luid uint64, servers []netip.Addr) []netip.Addr {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, domain)
+	f.luid, f.servers = luid, servers
+	return f.answers[domain]
+}
+
+func (f *fakeTunnelResolver) called() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
 func testKey(b byte) string {
 	raw := make([]byte, wgconf.KeyLen)
 	for i := range raw {
@@ -445,6 +468,7 @@ type harness struct {
 	fw   *fakeFirewall
 	prot *fakeProtector
 	res  *fakeResolver
+	tres *fakeTunnelResolver
 	e    *Engine
 
 	mu      sync.Mutex
@@ -470,14 +494,16 @@ func newHarness(t *testing.T, tune ...func(*Deps)) *harness {
 		fw:   &fakeFirewall{log: log},
 		prot: &fakeProtector{log: log},
 		res:  &fakeResolver{log: log, answers: map[string][]netip.Addr{}},
+		tres: &fakeTunnelResolver{answers: map[string][]netip.Addr{}},
 	}
 	d := Deps{
-		Core:     h.core,
-		Tunnels:  &fakeTunnels{log: log, dev: h.dev},
-		Net:      h.net,
-		FW:       h.fw,
-		Protect:  h.prot,
-		Resolver: h.res,
+		Core:           h.core,
+		Tunnels:        &fakeTunnels{log: log, dev: h.dev},
+		Net:            h.net,
+		FW:             h.fw,
+		Protect:        h.prot,
+		Resolver:       h.res,
+		TunnelResolver: h.tres,
 		FreePort: func() (netip.AddrPort, error) {
 			return netip.MustParseAddrPort("127.0.0.1:45000"), nil
 		},

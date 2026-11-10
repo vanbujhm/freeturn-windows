@@ -39,3 +39,16 @@ func BestRoute(dst netip.Addr) (luid uint64, onLink bool, err error) {
 	hop := row.NextHop.Addr()
 	return uint64(row.InterfaceLUID), !hop.IsValid() || hop.IsUnspecified(), nil
 }
+
+// InterfaceIndexes возвращает индексы адаптера для IPv4 и IPv6. У семейства без стека на
+// адаптере индекс 0.
+func InterfaceIndexes(luid uint64) (index4, index6 uint32) {
+	l := winipcfg.LUID(luid)
+	if row, err := l.IPInterface(windows.AF_INET); err == nil {
+		index4 = row.InterfaceIndex
+	}
+	if row, err := l.IPInterface(windows.AF_INET6); err == nil {
+		index6 = row.InterfaceIndex
+	}
+	return index4, index6
+}

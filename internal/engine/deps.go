@@ -72,6 +72,12 @@ type Resolver interface {
 	Resolve(ctx context.Context, domains []string, ph model.Physical) []netip.Addr
 }
 
+// TunnelResolver разрешает домен через DNS-серверы конфига по сокетам, привязанным к адаптеру
+// туннеля luid: запрос не выходит в физическую сеть открытым текстом.
+type TunnelResolver interface {
+	ResolveTunnel(ctx context.Context, domain string, luid uint64, servers []netip.Addr) []netip.Addr
+}
+
 // Deps - всё, что движок получает снаружи. OnChange и Logf необязательны, остальные поля
 // нужны всегда. Нулевые таймауты заменяются значениями из спецификации. OnChange и Logf не
 // должны блокироваться: OnChange вызывается и из потока событий ядра, а Logf ещё и под
@@ -83,6 +89,9 @@ type Deps struct {
 	FW       Firewall
 	Protect  Protector
 	Resolver Resolver
+	// TunnelResolver нужен проверке адреса. Без него имена, трафик которых идёт через туннель,
+	// не разрешаются вовсе, а не уходят в физическую сеть.
+	TunnelResolver TunnelResolver
 
 	FreePort func() (netip.AddrPort, error)
 	// Classify переводит текст ошибки ядра в код. Служба передаёт corehost.Classify.
