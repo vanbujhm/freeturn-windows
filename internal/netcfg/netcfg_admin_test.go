@@ -150,3 +150,38 @@ func TestAdapterRoutesAndBypass(t *testing.T) {
 	stop()
 	stop() // повторный вызов безопасен
 }
+
+func TestBestRoute(t *testing.T) {
+	if _, err := BestRoute(netip.Addr{}); err == nil {
+		t.Fatal("BestRoute(пустой адрес) без ошибки")
+	}
+	luid, err := BestRoute(netip.MustParseAddr("127.0.0.1"))
+	if err != nil {
+		t.Fatalf("BestRoute(127.0.0.1): %v", err)
+	}
+	row, err := winipcfg.LUID(luid).Interface()
+	if err != nil {
+		t.Fatalf("Interface: %v", err)
+	}
+	if row.Type != winipcfg.IfTypeSoftwareLoopback {
+		t.Fatalf("127.0.0.1 идёт через интерфейс типа %d, ожидался loopback", row.Type)
+	}
+
+	ph, err := FindPhysical(0)
+	if err != nil {
+		t.Fatalf("FindPhysical: %v", err)
+	}
+	// Шлюз лежит в подсети физического адаптера: маршрут подсети точнее маршрутов по
+	// умолчанию соседних туннелей (TUN Mihomo), поэтому ответ не зависит от них.
+	if !ph.Gateway4.IsValid() {
+		t.Skip("у физического интерфейса нет шлюза IPv4")
+	}
+	luid, err = BestRoute(ph.Gateway4)
+	if err != nil {
+		t.Fatalf("BestRoute(%s): %v", ph.Gateway4, err)
+	}
+	if luid != ph.LUID {
+		t.Fatalf("шлюз %s идёт через %d, физический интерфейс %d", ph.Gateway4, luid, ph.LUID)
+	}
+
+}
