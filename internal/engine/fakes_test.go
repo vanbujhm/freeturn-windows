@@ -192,6 +192,23 @@ type fakeNet struct {
 	allowed  []netip.Prefix
 	dns      []netip.Addr
 	listed   []netip.Prefix // последний вызов AddTunnelRoutes
+	routes   map[netip.Addr]uint64 // ответы BestRoute
+	routeErr map[netip.Addr]error
+}
+
+func (f *fakeNet) BestRoute(dst netip.Addr) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.routeErr[dst]; err != nil {
+		return 0, err
+	}
+	return f.routes[dst], nil
+}
+
+func (f *fakeNet) setRoutes(routes map[netip.Addr]uint64, errs map[netip.Addr]error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.routes, f.routeErr = routes, errs
 }
 
 func (f *fakeNet) FindPhysical(exclude uint64) (model.Physical, error) {
