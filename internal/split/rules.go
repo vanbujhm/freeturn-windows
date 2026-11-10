@@ -103,12 +103,16 @@ func normalizeDomain(v string) (string, bool) {
 
 // Compile превращает правила в префиксы и домены. Слишком широкие и неверные
 // правила не ломают подключение: они попадают в Skipped, а дубли убираются.
-// Вид правила определяется по значению, а не по полю Kind.
+// Вид правила определяется по значению, а не по полю Kind. Выключенные правила пропускаются
+// молча: это выбор человека, а не ошибка.
 func Compile(rules []model.Rule) Compiled {
 	var c Compiled
 	seenPrefix := map[netip.Prefix]bool{}
 	seenDomain := map[string]bool{}
 	for _, r := range rules {
+		if r.Off {
+			continue
+		}
 		norm, err := Classify(r.Value)
 		if err != nil {
 			c.Skipped = append(c.Skipped, Skip{Rule: r, Reason: ReasonInvalid})

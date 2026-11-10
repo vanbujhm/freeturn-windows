@@ -50,8 +50,12 @@ const (
 
 // Rule исключает адрес, подсеть или домен из туннеля.
 type Rule struct {
-	Kind  RuleKind
-	Value string
+	Kind    RuleKind
+	Value   string
+	Comment string // до 80 символов, без управляющих
+	// Off: правило хранится, но не действует. Нулевое значение в старых настройках это
+	// «включено».
+	Off bool
 }
 
 // SplitMode задаёт, куда идут адреса из списка правил.

@@ -932,3 +932,37 @@ func TestSaveSettingsSplitMode(t *testing.T) {
 		t.Fatalf("незнакомый режим сохранён как %q", got)
 	}
 }
+
+func TestSanitizeRulesKeepsCommentAndOff(t *testing.T) {
+	got, err := sanitizeRules([]model.Rule{
+		{Value: "Example.com", Comment: "  работа\n", Off: true},
+		{Value: "example.com", Comment: "другой"},
+		{Value: "1.2.3.4"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Rule{
+		{Kind: model.RuleDomain, Value: "example.com", Comment: "работа", Off: true},
+		{Kind: model.RuleIP, Value: "1.2.3.4"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sanitizeRules = %+v, want %+v", got, want)
+	}
+}
+
+func TestSaveSettingsOldRulesJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := `{"Options":{"KillSwitch":true,"Rules":[{"Kind":"domain","Value":"example.com"}]}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := profile.LoadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Rule{{Kind: model.RuleDomain, Value: "example.com"}}
+	if !slices.Equal(s.Options.Rules, want) || s.Options.Rules[0].Comment != "" || s.Options.Rules[0].Off {
+		t.Fatalf("Rules = %+v", s.Options.Rules)
+	}
+}

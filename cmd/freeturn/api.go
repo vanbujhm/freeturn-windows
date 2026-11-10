@@ -563,7 +563,7 @@ func (a *API) SaveSettings(s profile.Settings) error {
 }
 
 // sanitizeRules пересобирает правила через split.Classify (вид берётся по значению, не по
-// полю Kind), убирает повторы и отказывает при неверном значении или более maxRules правилах.
+// полю Kind), чистит комментарий, сохраняет выключатель, убирает повторы по виду и значению и отказывает при неверном значении или более maxRules правилах.
 func sanitizeRules(in []model.Rule) ([]model.Rule, *Error) {
 	out := make([]model.Rule, 0, len(in))
 	seen := make(map[model.Rule]bool, len(in))
@@ -576,6 +576,8 @@ func sanitizeRules(in []model.Rule) ([]model.Rule, *Error) {
 			continue
 		}
 		seen[c] = true
+		c.Comment = split.CleanComment(r.Comment)
+		c.Off = r.Off
 		out = append(out, c)
 	}
 	if len(out) > maxRules {

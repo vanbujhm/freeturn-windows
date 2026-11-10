@@ -136,3 +136,18 @@ func TestCompileSkipsInvalid(t *testing.T) {
 		t.Errorf("Skipped = %v", c.Skipped)
 	}
 }
+
+func TestCompileSkipsOff(t *testing.T) {
+	c := Compile([]model.Rule{
+		{Value: "1.2.3.4", Off: true},
+		{Value: "example.com", Off: true},
+		{Value: "0.0.0.0/0", Off: true}, // выключенное неверное правило тоже не в Skipped
+		{Value: "5.6.7.8"},
+	})
+	if len(c.Prefixes) != 1 || c.Prefixes[0] != netip.MustParsePrefix("5.6.7.8/32") {
+		t.Fatalf("Prefixes = %v", c.Prefixes)
+	}
+	if len(c.Domains) != 0 || len(c.Skipped) != 0 {
+		t.Fatalf("Domains = %v, Skipped = %v", c.Domains, c.Skipped)
+	}
+}
