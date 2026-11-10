@@ -201,6 +201,14 @@ func (s *supervisor) Status() (model.Status, error) {
 	return c.Status()
 }
 
+func (s *supervisor) Probe(value string) ([]model.ProbeHop, error) {
+	c, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	return c.Probe(value)
+}
+
 func (s *supervisor) Logs() ([]string, error) {
 	c, err := s.conn()
 	if err != nil {

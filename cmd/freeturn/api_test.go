@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/link"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/profile"
+	"github.com/vanbujhm/freeturn-windows/internal/split"
 )
 
 // Ключи в тестах только сгенерированные: base64 от 32 одинаковых байт.
@@ -40,6 +42,16 @@ type fakeService struct {
 	status      model.Status
 	statusErr   error
 	logs        []string
+	hops        []model.ProbeHop
+	probeErr    error
+	probed      []string
+}
+
+func (f *fakeService) Probe(value string) ([]model.ProbeHop, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probed = append(f.probed, value)
+	return f.hops, f.probeErr
 }
 
 func (f *fakeService) Connect(r model.ConnectRequest) error {
@@ -965,4 +977,108 @@ func TestSaveSettingsOldRulesJSON(t *testing.T) {
 	if !slices.Equal(s.Options.Rules, want) || s.Options.Rules[0].Comment != "" || s.Options.Rules[0].Off {
 		t.Fatalf("Rules = %+v", s.Options.Rules)
 	}
+}
+
+// checkEnv: профиль подключён с правилами connectedRules, потом сохранены правила now.
+func checkEnv(t *testing.T, connectedRules, now []model.Rule) *testEnv {
+	t.Helper()
+	e := newEnv(t)
+	v := e.importProfile(t, nil)
+	e.complete(t, v.ID)
+	save := func(rules []model.Rule) {
+		s := e.api.Settings()
+		s.Options.Rules = rules
+		if err := e.api.SaveSettings(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(connectedRules)
+	if err := e.api.Connect(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	save(now)
+	return e
+}
+
+func hop(addr string, via model.Via) model.ProbeHop {
+	return model.ProbeHop{Addr: netip.MustParseAddr(addr), Via: via}
+}
+
+func TestCheckAddressOffline(t *testing.T) {
+	e := checkEnv(t, nil, rulesFor("1.2.3.4"))
+	e.svc.probeErr = ipc.ErrNotConnected
+	r, err := e.api.CheckAddress("1.2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Rules.Verdict != split.VerdictDirect || r.Live || len(r.Hops) != 0 {
+		t.Fatalf("CheckAddress = %+v", r)
+	}
+}
+
+func TestCheckAddressServiceDown(t *testing.T) {
+	e := checkEnv(t, nil, nil)
+	e.svc.probeErr = ipc.ErrClosed
+	r, err := e.api.CheckAddress("1.2.3.4")
+	if err != nil || r.Live {
+		t.Fatalf("CheckAddress = %+v, %v", r, err)
+	}
+}
+
+func TestCheckAddressBadInput(t *testing.T) {
+	e := checkEnv(t, nil, nil)
+	_, err := e.api.CheckAddress("10.0.0.0/8")
+	if apiCode(t, err) != codeBadRule || len(e.svc.probed) != 0 {
+		t.Fatalf("err = %v, probed %v", err, e.svc.probed)
+	}
+}
+
+func TestCheckAddressReasons(t *testing.T) {
+	cases := []struct {
+		name           string
+		connected, now []model.Rule
+		input          string
+		hop            model.ProbeHop
+		expect         split.Verdict
+		reason         string
+	}{
+		{"совпадает", rulesFor("example.com"), rulesFor("example.com"), "example.com", hop("93.184.216.34", model.ViaDirect), split.VerdictDirect, ""},
+		{"правила изменены", nil, rulesFor("1.2.3.4"), "1.2.3.4", hop("1.2.3.4", model.ViaTunnel), split.VerdictDirect, "rules_changed"},
+		{"новый адрес домена", rulesFor("example.com"), rulesFor("example.com"), "example.com", hop("5.5.5.5", model.ViaTunnel), split.VerdictDirect, "new_address"},
+		{"другой адаптер", nil, nil, "1.1.1.1", hop("1.1.1.1", model.ViaOther), split.VerdictTunnel, "other_route"},
+		{"маршрут не узнать", nil, nil, "1.1.1.1", hop("1.1.1.1", ""), split.VerdictTunnel, "route_error"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := checkEnv(t, c.connected, c.now)
+			e.svc.hops = []model.ProbeHop{c.hop}
+			r, err := e.api.CheckAddress(c.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !r.Live || len(r.Hops) != 1 {
+				t.Fatalf("CheckAddress = %+v", r)
+			}
+			h := r.Hops[0]
+			if h.Addr != c.hop.Addr.String() || h.Expect != c.expect || h.Via != c.hop.Via || h.Reason != c.reason {
+				t.Fatalf("hop = %+v", h)
+			}
+		})
+	}
+}
+
+func TestCheckAddressUnresolved(t *testing.T) {
+	e := checkEnv(t, rulesFor("example.com"), rulesFor("example.com"))
+	r, err := e.api.CheckAddress("example.com")
+	if err != nil || !r.Live || !r.Unresolved || len(r.Hops) != 0 {
+		t.Fatalf("CheckAddress = %+v, %v", r, err)
+	}
+}
+
+func rulesFor(values ...string) []model.Rule {
+	out := make([]model.Rule, 0, len(values))
+	for _, v := range values {
+		out = append(out, model.Rule{Value: v})
+	}
+	return out
 }

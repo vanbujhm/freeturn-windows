@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,7 @@ type Service interface {
 	Disconnect() error
 	Status() (model.Status, error)
 	Logs() ([]string, error)
+	Probe(value string) ([]model.ProbeHop, error)
 }
 
 // ProfileView - профиль для интерфейса. Секретов (ключ обфускации, ссылка на звонок,
@@ -149,6 +151,8 @@ type API struct {
 	previewSeq    uint64
 	pending       *ImportPreview
 	update        *UpdateInfo
+	// connected - настройки последнего успешного Connect: с ними сверяется проверка адреса.
+	connected *model.Options
 }
 
 func newAPI(d apiDeps) *API {
@@ -479,6 +483,9 @@ func (a *API) Connect(id string) error {
 	if err := a.svc.Connect(model.ConnectRequest{Profile: p, Options: opts}); err != nil {
 		return serviceError(err)
 	}
+	a.mu.Lock()
+	a.connected = &opts
+	a.mu.Unlock()
 	a.remember(id)
 	return nil
 }
@@ -593,6 +600,76 @@ func (a *API) ClassifyRule(value string) (model.Rule, error) {
 		return model.Rule{}, newError(codeBadRule, err.Error(), err)
 	}
 	return r, nil
+}
+
+// CheckHop - один адрес проверки: куда он должен идти по правилам и куда идёт сейчас.
+type CheckHop struct {
+	Addr   string
+	Expect split.Verdict
+	Match  model.Rule
+	Via    model.Via
+	// Reason объясняет расхождение: "", "rules_changed", "new_address", "other_route",
+	// "route_error".
+	Reason string
+}
+
+// CheckResult - ответ проверки адреса.
+type CheckResult struct {
+	Rules      split.Explanation // по сохранённым настройкам, без адресов
+	Live       bool              // служба ответила, блок «Сейчас» показывается
+	Unresolved bool              // Live, ввод это домен, адресов нет
+	Hops       []CheckHop
+}
+
+// CheckAddress сопоставляет адрес или домен с правилами и, если туннель подключён, с
+// маршрутами Windows. Отказ службы не ошибка: тогда блока «Сейчас» нет.
+func (a *API) CheckAddress(value string) (CheckResult, error) {
+	a.mu.Lock()
+	opts := a.settings.Options
+	opts.Rules = append([]model.Rule(nil), opts.Rules...)
+	connected := a.connected
+	a.mu.Unlock()
+
+	ex, err := split.Explain(opts, value, nil)
+	if err != nil {
+		return CheckResult{}, newError(codeBadRule, err.Error(), err)
+	}
+	res := CheckResult{Rules: ex}
+	hops, err := a.svc.Probe(value)
+	if err != nil {
+		return res, nil
+	}
+	res.Live = true
+	res.Unresolved = ex.Input.Kind == model.RuleDomain && len(hops) == 0
+	for _, h := range hops {
+		one := []netip.Addr{h.Addr}
+		now, _ := split.Explain(opts, value, one)
+		ch := CheckHop{Addr: h.Addr.String(), Expect: now.Verdict, Match: now.Match.Rule, Via: h.Via}
+		ch.Reason = mismatch(ch, connected, value, one)
+		res.Hops = append(res.Hops, ch)
+	}
+	return res, nil
+}
+
+// mismatch подбирает причину, по которой маршрут адреса расходится с правилами.
+func mismatch(h CheckHop, connected *model.Options, value string, addr []netip.Addr) string {
+	switch {
+	case h.Via == "":
+		return "route_error"
+	case h.Via == model.ViaOther:
+		return "other_route"
+	case string(h.Via) == string(h.Expect):
+		return ""
+	}
+	if connected != nil {
+		if was, err := split.Explain(*connected, value, addr); err == nil && was.Verdict != h.Expect {
+			return "rules_changed"
+		}
+	}
+	if h.Match.Kind == model.RuleDomain {
+		return "new_address"
+	}
+	return "other_route"
 }
 
 // Logs возвращает журнал службы.
