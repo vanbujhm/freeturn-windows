@@ -201,4 +201,74 @@ describe("карточка правила", () => {
     await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
     expect(lastRules()).toEqual([{ Kind: "domain", Value: "example.com" }]);
   });
+
+  const gated = () => {
+    const gate = { release: () => {} };
+    saveSettings.mockImplementation(
+      (s: unknown) =>
+        new Promise<void>((r) => {
+          saved.push(s);
+          gate.release = r;
+        }),
+    );
+    return gate;
+  };
+
+  test("переключатель не отскакивает, пока идёт запись", async () => {
+    const gate = gated();
+    const el = mount();
+    q<HTMLInputElement>(el, ".rule .switch-input").click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+    expect(q<HTMLInputElement>(el, ".rule .switch-input").checked).toBe(false);
+    expect(q(el, ".rule").classList.contains("dim")).toBe(true);
+    gate.release();
+    await vi.waitFor(() => expect(q<HTMLInputElement>(el, ".rule .switch-input").disabled).toBe(false));
+    expect(q<HTMLInputElement>(el, ".rule .switch-input").checked).toBe(false);
+  });
+
+  test("комментарий: Enter во время другой записи не теряет ввод", async () => {
+    const gate = gated();
+    withRules([
+      { Kind: "ip", Value: "1.2.3.4" },
+      { Kind: "domain", Value: "example.com" },
+    ]);
+    const el = mount();
+    q<HTMLButtonElement>(el, ".rule-edit").click();
+    const input = q<HTMLInputElement>(el, ".rule-comment-input");
+    input.value = "дом";
+    el.querySelectorAll<HTMLInputElement>(".rule .switch-input")[1].click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+    key(input, "Enter");
+    expect(q<HTMLInputElement>(el, ".rule-comment-input").value).toBe("дом");
+    gate.release();
+    await vi.waitFor(() => expect(q<HTMLInputElement>(el, ".rule .switch-input").disabled).toBe(false));
+    key(input, "Enter");
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+    expect(lastRules()[0].Comment).toBe("дом");
+    expect(lastRules()[1].Off).toBe(true);
+    gate.release();
+  });
+
+  test("режим «Через VPN»: предупреждение, когда все правила выключены", () => {
+    const s = initial() as unknown as { Options: Record<string, unknown> };
+    s.Options.SplitMode = "only";
+    s.Options.Rules = [{ Kind: "ip", Value: "1.2.3.4", Off: true }];
+    state.settings = s as never;
+    const el = mount();
+    const warn = q<HTMLElement>(el, ".rules-all-off");
+    expect(warn.textContent).toBe(S.rules.allOffOnly);
+    expect(warn.hidden).toBe(false);
+
+    s.Options.Rules = [
+      { Kind: "ip", Value: "1.2.3.4", Off: true },
+      { Kind: "domain", Value: "example.com" },
+    ];
+    notify("settings");
+    expect(warn.hidden).toBe(true);
+
+    s.Options.Rules = [{ Kind: "ip", Value: "1.2.3.4", Off: true }];
+    s.Options.SplitMode = "";
+    notify("settings");
+    expect(warn.hidden).toBe(true);
+  });
 });

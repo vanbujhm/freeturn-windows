@@ -10,9 +10,9 @@ import (
 	"github.com/vanbujhm/freeturn-windows/internal/split"
 )
 
-// ErrNotConnected: проверять маршрут не у чего, туннель не подключён. Текст совпадает с
-// кодом, который канал передаёт окну.
-var ErrNotConnected = errors.New("not_connected")
+// ErrNotConnected: проверять маршрут не у чего, туннель не подключён. Текст ошибки канал
+// передаёт окну как код.
+var ErrNotConnected = errors.New(model.ProbeNotConnected)
 
 // Probe узнаёт, через какой интерфейс Windows отправит трафик адреса или домена сейчас.
 // Домен разрешается на той стороне, куда пойдёт его трафик (см. viaTunnel): иначе имя, которое

@@ -10,6 +10,7 @@ vi.mock("../api", () => ({
   fail: (e: unknown) => fail(e),
 }));
 
+import { notify, state } from "../store";
 import * as S from "../strings";
 import { createCheck } from "./check";
 
@@ -42,6 +43,7 @@ const text = (el: HTMLElement) => el.querySelector(".check-result")!.textContent
 
 beforeEach(() => {
   check.mockReset();
+  state.settings = null;
   fail.mockReset();
 });
 
@@ -143,5 +145,33 @@ describe("проверка адреса", () => {
     first(result());
     await vi.waitFor(() => expect(btn.disabled).toBe(false));
     expect(check).toHaveBeenCalledWith("1.1.1.1");
+  });
+
+  const edited = () => ({ Options: { Rules: [{ Kind: "ip", Value: "9.9.9.9" }] } }) as never;
+
+  test("правка правил убирает прежний ответ", async () => {
+    check.mockResolvedValue(result());
+    const el = mount();
+    await run(el);
+    notify("settings"); // настройки перечитаны без изменений
+    expect(el.querySelector(".check-result")!.childElementCount).toBeGreaterThan(0);
+    state.settings = edited();
+    notify("settings");
+    expect(el.querySelector(".check-result")!.childElementCount).toBe(0);
+  });
+
+  test("правка правил во время проверки повторяет её", async () => {
+    let first!: (v: unknown) => void;
+    check.mockImplementationOnce(() => new Promise((r) => (first = r)));
+    check.mockResolvedValueOnce(result({ Rules: explanation({ Verdict: "tunnel", Match: empty }) }));
+    const el = mount();
+    el.querySelector<HTMLInputElement>("#check-value")!.value = "1.2.3.4";
+    el.querySelector<HTMLButtonElement>(".check-run")!.click();
+    state.settings = edited();
+    notify("settings");
+    first(result());
+    await vi.waitFor(() => expect(text(el)).toContain(S.check.noMatch));
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(text(el)).not.toContain("(работа)");
   });
 });

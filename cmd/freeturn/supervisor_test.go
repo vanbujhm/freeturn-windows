@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -237,6 +239,45 @@ func TestSupervisorRereadsStatusAfterOverflow(t *testing.T) {
 		case <-deadline:
 			t.Fatal("после переполнения очереди состояние не перечитано")
 		}
+	}
+}
+
+// Probe без канала отвечает errNoService, с каналом передаёт запрос службе и её ответ.
+func TestSupervisorProbe(t *testing.T) {
+	fastRetry(t)
+	sc := &script{}
+	r := newRecorder()
+	s := newSupervisor(sc.dial, r.onEvent, r.onDown, r.onUp)
+	if _, err := s.Probe("example.com"); !errors.Is(err, errNoService) {
+		t.Fatalf("Probe без канала: %v", err)
+	}
+
+	c := newFakeConn(model.Status{})
+	c.hops = []model.ProbeHop{{Addr: netip.MustParseAddr("1.2.3.4"), Via: model.ViaTunnel}}
+	sc.add(c)
+	s.Start()
+	defer s.Stop()
+	r.waitLog(t, 1)
+
+	hops, err := s.Probe("example.com")
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if len(hops) != 1 || hops[0] != c.hops[0] {
+		t.Fatalf("hops = %v", hops)
+	}
+	c.mu.Lock()
+	probed := slices.Clone(c.probed)
+	c.mu.Unlock()
+	if len(probed) != 1 || probed[0] != "example.com" {
+		t.Fatalf("службу спросили про %v", probed)
+	}
+
+	c.mu.Lock()
+	c.probeErr = ipc.ErrNotConnected
+	c.mu.Unlock()
+	if _, err := s.Probe("example.com"); !errors.Is(err, ipc.ErrNotConnected) {
+		t.Fatalf("ошибка службы потеряна: %v", err)
 	}
 }
 

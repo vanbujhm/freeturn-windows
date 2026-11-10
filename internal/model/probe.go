@@ -11,6 +11,10 @@ const (
 	ViaOther  Via = "other"  // любой другой адаптер
 )
 
+// ProbeNotConnected - текст ошибки проверки маршрута без подключения. Движок возвращает его
+// как ошибку, канал передаёт окну и узнаёт по нему, что туннеля нет.
+const ProbeNotConnected = "not_connected"
+
 // ProbeHop - адрес и интерфейс его маршрута. Via пуст, если маршрут узнать не удалось.
 type ProbeHop struct {
 	Addr netip.Addr

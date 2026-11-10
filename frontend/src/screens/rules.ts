@@ -71,7 +71,11 @@ export function createRules(): Screen {
   // Открытое поле комментария одно. Оно живёт между перерисовками, чтобы ввод не терялся.
   let editing: Rule | null = null;
   let editInput: HTMLInputElement | null = null;
+  // Правка правила, которая сейчас записывается. Список показывает её сразу: иначе
+  // переключатель на время записи возвращался бы в прежнее положение.
+  let pending: { rule: Rule; patch: Partial<Rule> } | null = null;
   const notice = h("p", { class: "muted small-text", text: S.rules.appliesNext, hidden: true });
+  const allOff = h("p", { class: "small-text warn-text rules-all-off", text: S.rules.allOffOnly, hidden: true });
   const list = h("div", { class: "stack" });
 
   const el = h(
@@ -83,6 +87,7 @@ export function createRules(): Screen {
     createCheck(),
     h("div", { class: "row wrap" }, input, commentInput, addBtn),
     notice,
+    allOff,
     list,
     h("div", { class: "callout stack" }, ...S.rules.hint.map((t) => h("p", { class: "small-text", text: t }))),
   );
@@ -179,12 +184,14 @@ export function createRules(): Screen {
       return;
     }
     busy = true;
+    pending = { rule, patch };
     render();
     try {
       const rules = state.settings.Options.Rules ?? [];
       await saveRules(rules.map((r) => (same(r, rule) ? { ...r, ...patch } : r)));
     } finally {
       busy = false;
+      pending = null;
       render();
     }
   }
@@ -200,6 +207,8 @@ export function createRules(): Screen {
     field.value = rule.Comment ?? "";
     field.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
+        // Идёт другая запись: поле остаётся открытым, Enter сработает после неё.
+        if (busy) return;
         const value = field.value.trim();
         editing = editInput = null;
         void updateRule(rule, { Comment: value });
@@ -271,7 +280,10 @@ export function createRules(): Screen {
 
     const live = ["connecting", "captcha", "connected", "reconnecting"].includes(state.status.Phase);
     notice.hidden = !live;
-    const rules = s?.Options.Rules ?? [];
+    const saved = s?.Options.Rules ?? [];
+    const change = pending;
+    const rules = change ? saved.map((r) => (same(r, change.rule) ? { ...r, ...change.patch } : r)) : saved;
+    allOff.hidden = !(view.on && view.mode === "only" && rules.length > 0 && rules.every((r) => r.Off));
     if (rules.length === 0) {
       const empty = view.on && view.mode === "only" ? S.rules.emptyOnly : S.rules.empty;
       list.replaceChildren(h("p", { class: "muted center-text", text: empty }));

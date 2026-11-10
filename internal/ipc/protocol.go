@@ -40,9 +40,8 @@ const (
 	methodProbe      = "Probe"
 )
 
-// notConnected - текст ошибки Probe без подключения. Совпадает с engine.ErrNotConnected,
-// поэтому пакет не зависит от движка.
-const notConnected = "not_connected"
+// notConnected - текст ошибки Probe без подключения, общий с движком.
+const notConnected = model.ProbeNotConnected
 
 // Виды событий.
 const (
@@ -82,10 +81,10 @@ type request struct {
 
 // response - ответ службы на запрос с тем же id.
 type response struct {
-	Type   string        `json:"type"`
-	ID     uint64        `json:"id"`
-	Err    string        `json:"err,omitempty"`
-	Status *model.Status `json:"status,omitempty"`
+	Type   string           `json:"type"`
+	ID     uint64           `json:"id"`
+	Err    string           `json:"err,omitempty"`
+	Status *model.Status    `json:"status,omitempty"`
 	Logs   []string         `json:"logs,omitempty"`
 	Hops   []model.ProbeHop `json:"hops,omitempty"`
 }
@@ -98,10 +97,10 @@ type eventMsg struct {
 
 // serverMsg - всё, что клиент может получить от службы. Поля Connect здесь нет.
 type serverMsg struct {
-	Type   string        `json:"type"`
-	ID     uint64        `json:"id"`
-	Err    string        `json:"err"`
-	Status *model.Status `json:"status"`
+	Type   string           `json:"type"`
+	ID     uint64           `json:"id"`
+	Err    string           `json:"err"`
+	Status *model.Status    `json:"status"`
 	Logs   []string         `json:"logs"`
 	Hops   []model.ProbeHop `json:"hops"`
 	Event  Event            `json:"event"`

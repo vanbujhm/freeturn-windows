@@ -218,6 +218,7 @@ export const rules = {
   add: "Добавить",
   empty: "Список пуст",
   emptyOnly: "Список пуст: через VPN сейчас ничего не пойдёт.",
+  allOffOnly: "Все правила выключены: через VPN сейчас ничего не пойдёт.",
   remove: "Убрать",
   commentPlaceholder: "Комментарий",
   editComment: "Комментарий",

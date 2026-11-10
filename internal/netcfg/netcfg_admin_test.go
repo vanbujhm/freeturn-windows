@@ -192,5 +192,4 @@ func TestBestRoute(t *testing.T) {
 	if luid != ph.LUID {
 		t.Fatalf("шлюз %s идёт через %d, физический интерфейс %d", ph.Gateway4, luid, ph.LUID)
 	}
-
 }

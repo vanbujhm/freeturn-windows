@@ -3,6 +3,7 @@ import type { CheckHop, CheckResult } from "../../bindings/github.com/vanbujhm/f
 import type { Rule } from "../../bindings/github.com/vanbujhm/freeturn-windows/internal/model/models.js";
 import { API, fail } from "../api";
 import { h } from "../dom";
+import { state, subscribe } from "../store";
 import * as S from "../strings";
 
 const where = (v: string): string => (v === "tunnel" ? S.check.tunnel : v === "direct" ? S.check.direct : v === "other" ? S.check.other : S.check.unknown);
@@ -26,13 +27,32 @@ export function createCheck(): HTMLElement {
   // копит запросы, а ответ всегда относится к последнему запуску.
   let running = false;
 
+  // Ответ зависит от правил и режима. Когда они меняются, показанный ответ устарел и
+  // убирается, а проверка, которая ещё идёт, повторяется с новыми настройками.
+  const optionsKey = (): string => JSON.stringify(state.settings?.Options ?? null);
+  let shown = optionsKey();
+  let version = 0;
+  subscribe("settings", () => {
+    const key = optionsKey();
+    if (key === shown) return;
+    shown = key;
+    version++;
+    out.replaceChildren();
+  });
+
   async function run(): Promise<void> {
     const value = input.value.trim();
     if (!value || running) return;
     running = true;
     runBtn.disabled = true;
     try {
-      out.replaceChildren(...render(await API.CheckAddress(value)));
+      let res: CheckResult;
+      let asked: number;
+      do {
+        asked = version;
+        res = await API.CheckAddress(value);
+      } while (asked !== version);
+      out.replaceChildren(...render(res));
     } catch (e) {
       out.replaceChildren();
       fail(e);
