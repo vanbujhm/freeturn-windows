@@ -154,6 +154,18 @@ describe("карточка правила", () => {
     expect(q<HTMLInputElement>(el, ".rule-comment-input").value).toBe("черновик");
   });
 
+  test("фокус и курсор поля переживают перерисовку", () => {
+    const el = mount();
+    q<HTMLButtonElement>(el, ".rule-edit").click();
+    const input = q<HTMLInputElement>(el, ".rule-comment-input");
+    input.value = "черновик";
+    input.focus();
+    input.setSelectionRange(3, 3);
+    notify("status");
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(3);
+  });
+
   test("пустой комментарий убирает строку", async () => {
     withRules([{ Kind: "ip", Value: "1.2.3.4", Comment: "x" }]);
     const el = mount();

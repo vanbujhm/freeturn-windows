@@ -277,7 +277,18 @@ export function createRules(): Screen {
       list.replaceChildren(h("p", { class: "muted center-text", text: empty }));
       return;
     }
+    // Перестройка списка снимает фокус с открытого поля комментария, даже если оно
+    // переносится в новую карточку. Статус приходит каждую секунду, поэтому фокус и курсор
+    // возвращаются на место.
+    const field = editInput;
+    const focused = field !== null && document.activeElement === field;
+    const start = field?.selectionStart ?? null;
+    const end = field?.selectionEnd ?? null;
     list.replaceChildren(...rules.map(ruleCard));
+    if (focused && field.isConnected) {
+      field.focus();
+      if (start !== null && end !== null) field.setSelectionRange(start, end);
+    }
   }
 
   subscribe("settings", render);
