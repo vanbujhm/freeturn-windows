@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/samosvalishe/free-turn-proxy/mobile"
 
@@ -30,7 +32,11 @@ type tunnelControl interface {
 	Connect(model.ConnectRequest) error
 	Disconnect()
 	Status() model.Status
+	Probe(ctx context.Context, value string) ([]model.ProbeHop, error)
 }
+
+// probeTimeout - срок команды Probe: разрешение домена занимает до 3 секунд.
+const probeTimeout = 5 * time.Second
 
 // commands отвечает на команды канала и ведёт файл состояния. Клиентов может быть несколько,
 // поэтому mu держится на всю команду: иначе запись признака могла бы лечь в другом порядке,
@@ -137,3 +143,10 @@ func (c *commands) write() {
 func (c *commands) Status() model.Status { return c.eng.Status() }
 
 func (c *commands) Logs() []string { return c.logs() }
+
+// Probe только читает сеть, поэтому mu не берёт и не ждёт идущего подключения.
+func (c *commands) Probe(value string) ([]model.ProbeHop, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	return c.eng.Probe(ctx, value)
+}

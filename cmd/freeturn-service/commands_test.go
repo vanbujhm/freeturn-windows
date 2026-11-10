@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"slices"
@@ -39,6 +40,10 @@ type fakeTunnel struct {
 	disconnects int
 	hang        chan struct{} // не nil: Disconnect ждёт его закрытия
 	entered     chan struct{} // получает сигнал при входе в Disconnect
+
+	probed           string
+	probeDeadline    time.Time
+	probeHasDeadline bool
 }
 
 func (f *fakeTunnel) Connect(model.ConnectRequest) error {
@@ -62,6 +67,14 @@ func (f *fakeTunnel) Disconnect() {
 }
 
 func (f *fakeTunnel) Status() model.Status { return model.Status{Phase: model.PhaseIdle} }
+
+func (f *fakeTunnel) Probe(ctx context.Context, value string) ([]model.ProbeHop, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probed = value
+	f.probeDeadline, f.probeHasDeadline = ctx.Deadline()
+	return nil, nil
+}
 
 // stateLog запоминает всё, что служба записала в файл состояния.
 type stateLog struct {
@@ -330,5 +343,17 @@ func TestCommandsLogsAndStatus(t *testing.T) {
 	}
 	if got := c.Status(); got.Phase != model.PhaseIdle {
 		t.Fatalf("Status = %+v", got)
+	}
+}
+
+func TestCommandsProbe(t *testing.T) {
+	tun := &fakeTunnel{}
+	c := newCommands(tun, &stateLog{}, &logCatcher{})
+	start := time.Now()
+	if _, err := c.Probe("example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if tun.probed != "example.com" || !tun.probeHasDeadline || tun.probeDeadline.After(start.Add(5*time.Second+time.Second)) {
+		t.Fatalf("probed %q, deadline %v (%v)", tun.probed, tun.probeDeadline, tun.probeHasDeadline)
 	}
 }

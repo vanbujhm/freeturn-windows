@@ -178,6 +178,21 @@ func (c *Client) Status() (model.Status, error) {
 	return *m.Status, nil
 }
 
+// ErrNotConnected: служба не может проверить маршрут, туннель не подключён.
+var ErrNotConnected = errors.New("ipc: туннель не подключён")
+
+// Probe спрашивает службу, через какой интерфейс сейчас идёт трафик адреса или домена.
+func (c *Client) Probe(value string) ([]model.ProbeHop, error) {
+	m, err := c.call(request{Method: methodProbe, Probe: value})
+	if err != nil {
+		if err.Error() == notConnected {
+			return nil, ErrNotConnected
+		}
+		return nil, err
+	}
+	return m.Hops, nil
+}
+
 // Logs возвращает журнал службы.
 func (c *Client) Logs() ([]string, error) {
 	m, err := c.call(request{Method: methodGetLogs})

@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +31,16 @@ type stub struct {
 	logs           []string
 	disconnectGate chan struct{} // если задан, Disconnect ждёт закрытия
 	disconnectIn   chan struct{} // получает сигнал при входе в Disconnect
+	probed         string
+	hops           []model.ProbeHop
+	probeErr       error
+}
+
+func (s *stub) Probe(value string) ([]model.ProbeHop, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.probed = value
+	return s.hops, s.probeErr
 }
 
 func (s *stub) Connect(r model.ConnectRequest) error {
@@ -650,4 +662,35 @@ func TestPipeSDDLClientCanDial(t *testing.T) {
 		t.Fatalf("клиент не прошёл проверку доступа: %v", err)
 	}
 	conn.Close()
+}
+
+func TestProbeRoundTrip(t *testing.T) {
+	hops := []model.ProbeHop{
+		{Addr: netip.MustParseAddr("1.2.3.4"), Via: model.ViaTunnel},
+		{Addr: netip.MustParseAddr("::1")},
+	}
+	h := &stub{hops: hops}
+	_, path := startServer(t, h)
+	got, err := dial(t, path, nil).Probe("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, hops) || h.probed != "example.com" {
+		t.Fatalf("Probe = %+v, probed %q", got, h.probed)
+	}
+}
+
+func TestProbeNotConnected(t *testing.T) {
+	_, path := startServer(t, &stub{probeErr: errors.New("not_connected")})
+	if _, err := dial(t, path, nil).Probe("1.1.1.1"); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProbeOtherError(t *testing.T) {
+	_, path := startServer(t, &stub{probeErr: errors.New("проверяется адрес")})
+	_, err := dial(t, path, nil).Probe("10.0.0.0/8")
+	if err == nil || errors.Is(err, ErrNotConnected) || err.Error() != "проверяется адрес" {
+		t.Fatalf("err = %v", err)
+	}
 }

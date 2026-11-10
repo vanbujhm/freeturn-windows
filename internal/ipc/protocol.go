@@ -37,7 +37,12 @@ const (
 	methodDisconnect = "Disconnect"
 	methodGetStatus  = "GetStatus"
 	methodGetLogs    = "GetLogs"
+	methodProbe      = "Probe"
 )
+
+// notConnected - текст ошибки Probe без подключения. Совпадает с engine.ErrNotConnected,
+// поэтому пакет не зависит от движка.
+const notConnected = "not_connected"
 
 // Виды событий.
 const (
@@ -72,6 +77,7 @@ type request struct {
 	ID      uint64                `json:"id"`
 	Method  string                `json:"method"`
 	Connect *model.ConnectRequest `json:"connect,omitempty"`
+	Probe   string                `json:"probe,omitempty"`
 }
 
 // response - ответ службы на запрос с тем же id.
@@ -80,7 +86,8 @@ type response struct {
 	ID     uint64        `json:"id"`
 	Err    string        `json:"err,omitempty"`
 	Status *model.Status `json:"status,omitempty"`
-	Logs   []string      `json:"logs,omitempty"`
+	Logs   []string         `json:"logs,omitempty"`
+	Hops   []model.ProbeHop `json:"hops,omitempty"`
 }
 
 // eventMsg - событие в проводе.
@@ -95,6 +102,7 @@ type serverMsg struct {
 	ID     uint64        `json:"id"`
 	Err    string        `json:"err"`
 	Status *model.Status `json:"status"`
-	Logs   []string      `json:"logs"`
-	Event  Event         `json:"event"`
+	Logs   []string         `json:"logs"`
+	Hops   []model.ProbeHop `json:"hops"`
+	Event  Event            `json:"event"`
 }

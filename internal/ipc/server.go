@@ -29,6 +29,8 @@ type Handler interface {
 	Disconnect()
 	Status() model.Status
 	Logs() []string
+	// Probe узнаёт маршрут адреса или домена. Только читает сеть.
+	Probe(value string) ([]model.ProbeHop, error)
 }
 
 // Server принимает клиентов на именованном канале.
@@ -225,6 +227,13 @@ func (c *srvClient) handle(req request) (response, bool) {
 		resp.Status = &st
 	case methodGetLogs:
 		resp.Logs = c.srv.h.Logs()
+	case methodProbe:
+		hops, err := c.srv.h.Probe(req.Probe)
+		if err != nil {
+			resp.Err = err.Error()
+		} else {
+			resp.Hops = hops
+		}
 	default:
 		resp.Err = "неизвестная команда"
 	}
