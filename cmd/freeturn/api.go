@@ -608,8 +608,10 @@ type CheckHop struct {
 	Expect split.Verdict
 	Match  model.Rule
 	Via    model.Via
-	// Reason объясняет расхождение: "", "rules_changed", "new_address", "other_route",
-	// "route_error".
+	// Local и Outside повторяют ProbeHop: адрес в подключённой подсети или вне AllowedIPs.
+	Local, Outside bool
+	// Reason объясняет расхождение: "", "local_network", "outside_allowed", "rules_changed",
+	// "new_address", "other_route", "route_error".
 	Reason string
 }
 
@@ -644,7 +646,7 @@ func (a *API) CheckAddress(value string) (CheckResult, error) {
 	for _, h := range hops {
 		one := []netip.Addr{h.Addr}
 		now, _ := split.Explain(opts, value, one)
-		ch := CheckHop{Addr: h.Addr.String(), Expect: now.Verdict, Match: now.Match.Rule, Via: h.Via}
+		ch := CheckHop{Addr: h.Addr.String(), Expect: now.Verdict, Match: now.Match.Rule, Via: h.Via, Local: h.Local, Outside: h.Outside}
 		ch.Reason = mismatch(ch, connected, value, one)
 		res.Hops = append(res.Hops, ch)
 	}
@@ -660,6 +662,10 @@ func mismatch(h CheckHop, connected *model.Options, value string, addr []netip.A
 		return "other_route"
 	case string(h.Via) == string(h.Expect):
 		return ""
+	case h.Via == model.ViaDirect && h.Local:
+		return "local_network"
+	case h.Via == model.ViaDirect && h.Outside:
+		return "outside_allowed"
 	}
 	if connected != nil {
 		if was, err := split.Explain(*connected, value, addr); err == nil && was.Verdict != h.Expect {

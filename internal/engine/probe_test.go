@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/vanbujhm/freeturn-windows/internal/model"
@@ -93,5 +94,42 @@ func TestProbeBadInput(t *testing.T) {
 	}
 	if _, err := h.e.Probe(context.Background(), "*.a"); !errors.Is(err, split.ErrWildcard) {
 		t.Fatalf("маска: err = %v", err)
+	}
+}
+
+func TestProbeLocalAndOutside(t *testing.T) {
+	h := newHarness(t)
+	req := testRequest()
+	req.Profile.WGConfig = strings.Replace(req.Profile.WGConfig, "AllowedIPs = 0.0.0.0/0", "AllowedIPs = 10.0.0.0/8", 1)
+	h.connect(req)
+	h.waitPhase(model.PhaseConnected)
+	lan, outside, inside := netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("10.1.1.1")
+	h.net.setRoutes(map[netip.Addr]uint64{lan: 7, outside: 7, inside: testLUID}, nil)
+	h.net.setOnLink(map[netip.Addr]bool{lan: true})
+	for _, c := range []struct {
+		addr            netip.Addr
+		local, isOutside bool
+	}{{lan, true, true}, {outside, false, true}, {inside, false, false}} {
+		got, err := h.e.Probe(context.Background(), c.addr.String())
+		if err != nil || len(got) != 1 {
+			t.Fatalf("Probe(%s) = %+v, %v", c.addr, got, err)
+		}
+		if got[0].Local != c.local || got[0].Outside != c.isOutside {
+			t.Errorf("Probe(%s) = %+v", c.addr, got[0])
+		}
+	}
+}
+
+func TestProbeOutsideIgnoredInTunnelOnly(t *testing.T) {
+	h := newHarness(t)
+	req := testRequest()
+	req.Options.SplitMode = model.SplitOnly
+	req.Profile.WGConfig = strings.Replace(req.Profile.WGConfig, "AllowedIPs = 0.0.0.0/0", "AllowedIPs = 10.0.0.0/8", 1)
+	h.connect(req)
+	h.waitPhase(model.PhaseConnected)
+	h.net.setRoutes(map[netip.Addr]uint64{ip1: 7}, nil)
+	got, err := h.e.Probe(context.Background(), "1.1.1.1")
+	if err != nil || len(got) != 1 || got[0].Outside {
+		t.Fatalf("Probe = %+v, %v", got, err)
 	}
 }

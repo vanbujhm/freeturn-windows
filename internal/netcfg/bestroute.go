@@ -12,15 +12,16 @@ import (
 // procGetBestRoute2: в winipcfg и x/sys обёртки нет.
 var procGetBestRoute2 = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetBestRoute2")
 
-// BestRoute возвращает LUID интерфейса, через который Windows отправит пакет на dst сейчас.
-// Только читает таблицу маршрутов.
-func BestRoute(dst netip.Addr) (uint64, error) {
+// BestRoute возвращает LUID интерфейса, через который Windows отправит пакет на dst сейчас,
+// и onLink, если у маршрута нет шлюза (адрес в подключённой подсети или маршрут прямо на
+// адаптер). Только читает таблицу маршрутов.
+func BestRoute(dst netip.Addr) (luid uint64, onLink bool, err error) {
 	if !dst.IsValid() {
-		return 0, errors.New("netcfg: пустой адрес")
+		return 0, false, errors.New("netcfg: пустой адрес")
 	}
 	var dest, source winipcfg.RawSockaddrInet
 	if err := dest.SetAddr(dst.Unmap()); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	var row winipcfg.MibIPforwardRow2
 	r, _, _ := procGetBestRoute2.Call(
@@ -33,7 +34,8 @@ func BestRoute(dst netip.Addr) (uint64, error) {
 		uintptr(unsafe.Pointer(&source)),
 	)
 	if r != 0 {
-		return 0, windows.Errno(r)
+		return 0, false, windows.Errno(r)
 	}
-	return uint64(row.InterfaceLUID), nil
+	hop := row.NextHop.Addr()
+	return uint64(row.InterfaceLUID), !hop.IsValid() || hop.IsUnspecified(), nil
 }

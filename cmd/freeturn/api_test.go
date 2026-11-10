@@ -1047,6 +1047,8 @@ func TestCheckAddressReasons(t *testing.T) {
 		{"новый адрес домена", rulesFor("example.com"), rulesFor("example.com"), "example.com", hop("5.5.5.5", model.ViaTunnel), split.VerdictDirect, "new_address"},
 		{"другой адаптер", nil, nil, "1.1.1.1", hop("1.1.1.1", model.ViaOther), split.VerdictTunnel, "other_route"},
 		{"маршрут не узнать", nil, nil, "1.1.1.1", hop("1.1.1.1", ""), split.VerdictTunnel, "route_error"},
+		{"локальная сеть", nil, nil, "192.168.1.1", model.ProbeHop{Addr: netip.MustParseAddr("192.168.1.1"), Via: model.ViaDirect, Local: true, Outside: true}, split.VerdictTunnel, "local_network"},
+		{"вне AllowedIPs", nil, nil, "8.8.8.8", model.ProbeHop{Addr: netip.MustParseAddr("8.8.8.8"), Via: model.ViaDirect, Outside: true}, split.VerdictTunnel, "outside_allowed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

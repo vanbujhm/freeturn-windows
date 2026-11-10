@@ -155,7 +155,7 @@ func (sysNet) FindPhysical(exclude uint64) (model.Physical, error) {
 	return netcfg.FindPhysical(exclude)
 }
 
-func (sysNet) BestRoute(dst netip.Addr) (uint64, error) { return netcfg.BestRoute(dst) }
+func (sysNet) BestRoute(dst netip.Addr) (uint64, bool, error) { return netcfg.BestRoute(dst) }
 
 func (sysNet) ConfigureInterface(luid uint64, addrs []netip.Prefix, mtu int) error {
 	return netcfg.ConfigureInterface(luid, addrs, mtu)

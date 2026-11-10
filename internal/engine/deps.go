@@ -47,8 +47,9 @@ type Network interface {
 	OtherTunnel(exclude uint64) (string, bool)
 	// FakeIPTunnel: туннельный адаптер (не exclude) с DNS в 198.18.0.0/15 (fake-ip Mihomo).
 	FakeIPTunnel(exclude uint64) (string, bool)
-	// BestRoute возвращает LUID интерфейса, через который Windows отправит пакет на dst.
-	BestRoute(dst netip.Addr) (uint64, error)
+	// BestRoute возвращает LUID интерфейса, через который Windows отправит пакет на dst, и
+	// признак маршрута подключённой подсети (без шлюза).
+	BestRoute(dst netip.Addr) (luid uint64, onLink bool, err error)
 }
 
 // Firewall ставит и снимает kill switch. Движок не вызывает его методы одновременно, кроме

@@ -15,4 +15,8 @@ const (
 type ProbeHop struct {
 	Addr netip.Addr
 	Via  Via
+	// Local: адрес идёт напрямую маршрутом подключённой подсети (роутер, принтер).
+	Local bool
+	// Outside: туннель ведёт весь трафик, кроме списка, но адреса нет в AllowedIPs профиля.
+	Outside bool
 }

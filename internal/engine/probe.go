@@ -28,8 +28,12 @@ func (e *Engine) Probe(ctx context.Context, value string) ([]model.ProbeHop, err
 	ok := s != nil && s.established
 	var luid uint64
 	var ph model.Physical
+	var allowed []netip.Prefix
+	tunnelOnly := false
 	if ok {
 		luid, ph = s.luid, s.ph
+		allowed = s.cfg.AllowedPrefixes()
+		tunnelOnly = s.req.Options.TunnelOnly()
 	}
 	e.mu.Unlock()
 	if !ok {
@@ -44,13 +48,14 @@ func (e *Engine) Probe(ctx context.Context, value string) ([]model.ProbeHop, err
 	}
 	hops := make([]model.ProbeHop, 0, len(addrs))
 	for _, a := range addrs {
-		hop := model.ProbeHop{Addr: a}
-		if got, err := e.d.Net.BestRoute(a); err == nil {
+		hop := model.ProbeHop{Addr: a, Outside: !tunnelOnly && !covered(allowed, a)}
+		if got, onLink, err := e.d.Net.BestRoute(a); err == nil {
 			switch got {
 			case luid:
 				hop.Via = model.ViaTunnel
 			case ph.LUID:
 				hop.Via = model.ViaDirect
+				hop.Local = onLink
 			default:
 				hop.Via = model.ViaOther
 			}
@@ -58,4 +63,15 @@ func (e *Engine) Probe(ctx context.Context, value string) ([]model.ProbeHop, err
 		hops = append(hops, hop)
 	}
 	return hops, nil
+}
+
+// covered сообщает, что адрес попадает в один из префиксов.
+func covered(ps []netip.Prefix, a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range ps {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }

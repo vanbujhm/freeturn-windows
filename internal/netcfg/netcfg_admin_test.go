@@ -152,10 +152,10 @@ func TestAdapterRoutesAndBypass(t *testing.T) {
 }
 
 func TestBestRoute(t *testing.T) {
-	if _, err := BestRoute(netip.Addr{}); err == nil {
+	if _, _, err := BestRoute(netip.Addr{}); err == nil {
 		t.Fatal("BestRoute(пустой адрес) без ошибки")
 	}
-	luid, err := BestRoute(netip.MustParseAddr("127.0.0.1"))
+	luid, _, err := BestRoute(netip.MustParseAddr("127.0.0.1"))
 	if err != nil {
 		t.Fatalf("BestRoute(127.0.0.1): %v", err)
 	}
@@ -176,9 +176,12 @@ func TestBestRoute(t *testing.T) {
 	if !ph.Gateway4.IsValid() {
 		t.Skip("у физического интерфейса нет шлюза IPv4")
 	}
-	luid, err = BestRoute(ph.Gateway4)
+	luid, onLink, err := BestRoute(ph.Gateway4)
 	if err != nil {
 		t.Fatalf("BestRoute(%s): %v", ph.Gateway4, err)
+	}
+	if !onLink {
+		t.Fatalf("шлюз %s не в подключённой подсети", ph.Gateway4)
 	}
 	if luid != ph.LUID {
 		t.Fatalf("шлюз %s идёт через %d, физический интерфейс %d", ph.Gateway4, luid, ph.LUID)

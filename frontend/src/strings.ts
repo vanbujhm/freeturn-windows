@@ -250,6 +250,8 @@ export const check = {
   expect: (v: string) => `по правилам ${v}`,
   actual: (v: string) => `сейчас ${v}`,
   reasons: {
+    local_network: "адрес в локальной сети, Windows ведёт его напрямую",
+    outside_allowed: "адреса нет в AllowedIPs профиля, туннель его не ведёт",
     rules_changed: "правила изменены, подействуют при переподключении",
     new_address: "новый адрес домена, маршрут появится при следующем обновлении доменов",
     other_route: "маршрут другой программы",

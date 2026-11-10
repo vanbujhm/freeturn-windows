@@ -194,15 +194,22 @@ type fakeNet struct {
 	listed   []netip.Prefix // последний вызов AddTunnelRoutes
 	routes   map[netip.Addr]uint64 // ответы BestRoute
 	routeErr map[netip.Addr]error
+	onLink   map[netip.Addr]bool
 }
 
-func (f *fakeNet) BestRoute(dst netip.Addr) (uint64, error) {
+func (f *fakeNet) BestRoute(dst netip.Addr) (uint64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.routeErr[dst]; err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return f.routes[dst], nil
+	return f.routes[dst], f.onLink[dst], nil
+}
+
+func (f *fakeNet) setOnLink(m map[netip.Addr]bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onLink = m
 }
 
 func (f *fakeNet) setRoutes(routes map[netip.Addr]uint64, errs map[netip.Addr]error) {
