@@ -643,6 +643,17 @@ func (a *API) CheckAddress(value string) (CheckResult, error) {
 	}
 	res.Live = true
 	res.Unresolved = ex.Input.Kind == model.RuleDomain && len(hops) == 0
+	// Адреса домена известны: верхний блок сверяет и их, иначе он противоречил бы строкам
+	// адресов при правиле подсети.
+	if ex.Input.Kind == model.RuleDomain && len(hops) > 0 {
+		all := make([]netip.Addr, 0, len(hops))
+		for _, h := range hops {
+			all = append(all, h.Addr)
+		}
+		if withAddrs, err := split.Explain(opts, value, all); err == nil {
+			res.Rules = withAddrs
+		}
+	}
 	for _, h := range hops {
 		one := []netip.Addr{h.Addr}
 		now, _ := split.Explain(opts, value, one)

@@ -1084,3 +1084,15 @@ func rulesFor(values ...string) []model.Rule {
 	}
 	return out
 }
+
+func TestCheckAddressRulesUseResolvedAddrs(t *testing.T) {
+	e := checkEnv(t, rulesFor("93.184.0.0/16"), rulesFor("93.184.0.0/16"))
+	e.svc.hops = []model.ProbeHop{hop("93.184.216.34", model.ViaDirect)}
+	r, err := e.api.CheckAddress("example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Rules.Verdict != split.VerdictDirect || r.Rules.Match.Rule.Value != "93.184.0.0/16" {
+		t.Fatalf("Rules = %+v", r.Rules)
+	}
+}
