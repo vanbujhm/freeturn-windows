@@ -186,16 +186,22 @@ func appIDFromPath(path string) (*wtFwpByteBlob, error) {
 	return appID, nil
 }
 
-// missingApps возвращает пути, для которых app id не получить, в порядке списка.
-func missingApps(paths []string) []string {
-	var out []string
+// resolveApps получает app id программ. Пути, для которых id не получить (нет файла),
+// возвращаются в skipped в порядке списка. id освобождает freeAppIDs.
+func resolveApps(paths []string) (ids []*wtFwpByteBlob, skipped []string) {
 	for _, p := range paths {
 		id, err := appIDFromPath(p)
 		if err != nil {
-			out = append(out, p)
+			skipped = append(skipped, p)
 			continue
 		}
-		fwpmFreeMemory0(unsafe.Pointer(&id))
+		ids = append(ids, id)
 	}
-	return out
+	return ids, skipped
+}
+
+func freeAppIDs(ids []*wtFwpByteBlob) {
+	for i := range ids {
+		fwpmFreeMemory0(unsafe.Pointer(&ids[i]))
+	}
 }

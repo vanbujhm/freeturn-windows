@@ -112,7 +112,11 @@ func registerBaseObjects(session uintptr) (*baseObjects, error) {
 // старую и новую сессии одновременно. Программы, для которых нет файла, пропускаются и
 // возвращаются вызывающему.
 func installSession(o Options) (uintptr, []string, error) {
-	skipped := missingApps(o.Apps)
+	ids, skipped := resolveApps(o.Apps)
+	// WFP копирует условия при добавлении фильтра, поэтому id нужны только до конца
+	// транзакции.
+	defer freeAppIDs(ids)
+	o.appIDs = ids
 	session, err := createWfpSession()
 	if err != nil {
 		return 0, nil, wrapErr(err)

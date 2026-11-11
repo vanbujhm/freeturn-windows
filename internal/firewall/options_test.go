@@ -103,17 +103,24 @@ func TestAppsBelowPermitsAboveBypass(t *testing.T) {
 	}
 }
 
-func TestMissingApps(t *testing.T) {
+// resolveApps получает app id один раз: фильтры ставятся по тем же id, о пропуске которых
+// сообщено, и файл, пропавший между проверкой и установкой, не выпадает молча.
+func TestResolveApps(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	missing := `C:\no-such-dir\missing.exe`
-	if got := missingApps([]string{self, missing}); !slices.Equal(got, []string{missing}) {
-		t.Fatalf("missingApps = %v", got)
+	ids, skipped := resolveApps([]string{self, missing})
+	defer freeAppIDs(ids)
+	if len(ids) != 1 || ids[0] == nil || ids[0].size == 0 {
+		t.Fatalf("ids = %v", ids)
 	}
-	if got := missingApps(nil); len(got) != 0 {
-		t.Fatalf("missingApps(nil) = %v", got)
+	if !slices.Equal(skipped, []string{missing}) {
+		t.Fatalf("skipped = %v", skipped)
+	}
+	if ids, skipped := resolveApps(nil); len(ids) != 0 || len(skipped) != 0 {
+		t.Fatalf("resolveApps(nil) = %v, %v", ids, skipped)
 	}
 }
 

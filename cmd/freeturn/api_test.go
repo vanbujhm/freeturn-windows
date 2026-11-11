@@ -1216,6 +1216,12 @@ func TestPickApp(t *testing.T) {
 		t.Fatalf("не exe: код %q", code)
 	}
 
+	// Wails v3 на Windows сообщает об отмене ошибкой, а не пустой строкой.
+	e.pickPath, e.pickErr = "", errors.New("cancelled by user")
+	if got, err := e.api.PickApp(); got != "" || err != nil {
+		t.Fatalf("отмена ошибкой Wails: %q, %v", got, err)
+	}
+
 	e.pickPath, e.pickErr = "", errors.New("диалог упал")
 	_, err = e.api.PickApp()
 	if code := apiCode(t, err); code != codeSettings {

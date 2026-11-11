@@ -21,7 +21,6 @@ func TestCleanAppsPaths(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{`C:\Program Files\App\app.exe`, `C:\Program Files\App\app.exe`},
 		{"  c:/Program Files/App/./APP.EXE ", `c:\Program Files\App\APP.EXE`},
-		{`\\server\share\app.exe`, `\\server\share\app.exe`},
 	}
 	for _, c := range cases {
 		got, err := CleanApps([]model.AppRule{{Path: c.in}})
@@ -70,6 +69,10 @@ func TestCleanAppsRejectsBadPath(t *testing.T) {
 		"app.exe", `.\app.exe`, `\app.exe`, `C:app.exe`, `C:\App\..\app.exe`,
 		`C:\App\app.dll`, `C:\App\app`, "", "   ", "C:\\App\\a\x00b.exe",
 		`C:\` + strings.Repeat("я", MaxAppPath-6) + ".exe",
+		// Служба открывает путь под SYSTEM: сетевой путь или канал отдал бы чужому серверу
+		// учётные данные машины.
+		`\\server\share\app.exe`, `\\.\pipe\app.exe`, `\\?\C:\app.exe`, `\\?\UNC\host\s\a.exe`,
+		"//server/share/app.exe", `\\127.0.0.1\c$\app.exe`, `1:\app.exe`,
 	}
 	for _, p := range bad {
 		if _, err := CleanApps([]model.AppRule{{Path: p}}); !errors.Is(err, ErrAppPath) {

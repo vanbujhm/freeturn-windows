@@ -159,20 +159,18 @@ func (s *session) bypass() []netip.Prefix {
 	return s.listed()
 }
 
-// firewallOptions собирает сессию брандмауэра для текущих адресов. DNS конфига ограничивает
-// запросы только когда есть адаптер: до него запрос к DNS конфига всё равно не дошёл бы.
+// firewallOptions собирает сессию брандмауэра для текущих адресов. DNS конфига действует
+// только вместе с kill switch, и тогда уже на шаге 1: блокировка от прошлого подключения
+// закрывала DNS мимо конфига, и блок программ не должен этот запрет снять.
 func (s *session) firewallOptions() firewall.Options {
-	o := firewall.Options{
+	return firewall.Options{
 		TunLUID:    s.luid,
+		DNS:        s.cfg.DNS,
 		AllowLAN:   s.req.Options.AllowLAN,
 		Bypass:     s.bypass(),
 		KillSwitch: s.kill,
 		Apps:       s.apps,
 	}
-	if s.luid != 0 {
-		o.DNS = s.cfg.DNS
-	}
-	return o
 }
 
 // restingPhase - фаза, в которую сессия возвращается после капчи.

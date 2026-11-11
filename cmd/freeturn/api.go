@@ -109,6 +109,8 @@ const (
 	// busyText - текст ошибки engine.ErrBusy. Через канал ошибка приходит текстом, а окно не
 	// импортирует engine (тянет сетевые пакеты службы); совпадение держит тест.
 	busyText = "engine: подключение уже идёт"
+	// dialogCancelled - текст ошибки, которой Wails сообщает о закрытом диалоге выбора файла.
+	dialogCancelled = "cancelled by user"
 )
 
 // apiDeps - всё внешнее, чем пользуется API. В тестах подменяется.
@@ -626,6 +628,11 @@ func (a *API) PickApp() (string, error) {
 		return "", newError(codeSettings, "не удалось открыть выбор файла", nil)
 	}
 	path, err := a.pickFile("Выберите программу", "Программы", "*.exe")
+	// Wails v3 на Windows сообщает о закрытом диалоге ошибкой cfd.ErrorCancelled. Пакет
+	// внутренний, поэтому сравнивается текст.
+	if err != nil && err.Error() == dialogCancelled {
+		return "", nil
+	}
 	if err != nil {
 		return "", newError(codeSettings, "не удалось открыть выбор файла", err)
 	}

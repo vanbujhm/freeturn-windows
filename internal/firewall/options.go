@@ -19,6 +19,11 @@ type Options struct {
 	KillSwitch bool
 	// Apps - пути программ, которым закрыто всё, кроме адаптера туннеля, loopback и LAN.
 	Apps []string
+
+	// appIDs - app id программ из Apps, которые нашлись. Заполняет installSession один раз
+	// до транзакции: фильтры ставятся ровно по тем программам, о которых не сообщено как о
+	// пропущенных.
+	appIDs []*wtFwpByteBlob
 }
 
 // step один шаг установки правил внутри транзакции. install получает сам шаг и берёт вес
@@ -77,7 +82,7 @@ func buildSteps(o Options) []step {
 
 	if len(o.Apps) > 0 {
 		steps = append(steps, step{name: "apps", weight: 11, install: func(s step, session uintptr, bo *baseObjects) error {
-			return blockApps(session, bo, s.weight, o.Apps)
+			return blockApps(session, bo, s.weight, o.appIDs)
 		}})
 	}
 

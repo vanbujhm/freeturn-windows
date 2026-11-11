@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -56,8 +57,8 @@ func TestAppsWithoutKillSwitch(t *testing.T) {
 
 	opts := h.fwOpts(2)
 	wantFW(t, "шаг 1", opts[0], 0, false)
-	if !opts[0].AllowLAN || len(opts[0].DNS) != 0 {
-		t.Errorf("шаг 1: AllowLAN %v, DNS %v", opts[0].AllowLAN, opts[0].DNS)
+	if !opts[0].AllowLAN {
+		t.Errorf("шаг 1: AllowLAN %v", opts[0].AllowLAN)
 	}
 	last := h.fw.last()
 	wantFW(t, "шаг 5", last, testLUID, false)
@@ -178,6 +179,24 @@ func TestAppsFromBlockedKillSwitchOff(t *testing.T) {
 	wantFW(t, "шаг 5", opts[2], testLUID, true)
 	wantFW(t, "после шага 5", opts[3], testLUID, false)
 	h.wantNotCalled("fw.disable")
+}
+
+// Блокировка от прошлого подключения закрывала DNS мимо конфига. Блок программ на шаге 1
+// заменяет её сессию и не должен этот запрет снять: иначе при разрешённой LAN запросы ушли
+// бы к роутеру.
+func TestAppsFromBlockedKeepsDNSDeny(t *testing.T) {
+	h := newHarness(t)
+	if err := h.e.ArmBlock(model.Options{KillSwitch: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.connect(appsRequest(false))
+	h.waitPhase(model.PhaseConnected)
+
+	step1 := h.fwOpts(2)[1]
+	wantFW(t, "шаг 1", step1, 0, true)
+	if !slices.Equal(step1.DNS, []netip.Addr{netip.MustParseAddr("198.51.100.53")}) {
+		t.Errorf("шаг 1: DNS %v, ожидался DNS конфига", step1.DNS)
+	}
 }
 
 func TestAppsFromBlockedFailureStaysBlocked(t *testing.T) {

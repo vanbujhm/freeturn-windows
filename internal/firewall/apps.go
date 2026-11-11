@@ -14,22 +14,16 @@ import (
 
 // blockApps запрещает программам обмен на слоях подключения и приёма. Разрешения адаптера
 // туннеля, loopback и LAN стоят выше и пропускают программу туда, всё остальное ей закрыто.
-// Путь без файла пропускается: список таких путей вызывающему отдаёт missingApps.
-func blockApps(session uintptr, baseObjects *baseObjects, weight uint8, paths []string) error {
+// ids получены resolveApps; программы без файла в них уже нет.
+func blockApps(session uintptr, baseObjects *baseObjects, weight uint8, ids []*wtFwpByteBlob) error {
 	layers := []appLayer{
 		{"Block app outside tunnel (IPv4 outbound)", cFWPM_LAYER_ALE_AUTH_CONNECT_V4},
 		{"Block app outside tunnel (IPv4 inbound)", cFWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4},
 		{"Block app outside tunnel (IPv6 outbound)", cFWPM_LAYER_ALE_AUTH_CONNECT_V6},
 		{"Block app outside tunnel (IPv6 inbound)", cFWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6},
 	}
-	for _, path := range paths {
-		appID, err := appIDFromPath(path)
-		if err != nil {
-			continue
-		}
-		err = blockApp(session, baseObjects, weight, appID, layers)
-		fwpmFreeMemory0(unsafe.Pointer(&appID))
-		if err != nil {
+	for _, appID := range ids {
+		if err := blockApp(session, baseObjects, weight, appID, layers); err != nil {
 			return wrapErr(err)
 		}
 	}

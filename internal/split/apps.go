@@ -48,7 +48,9 @@ func CleanApps(in []model.AppRule) ([]model.AppRule, error) {
 }
 
 // cleanAppPath проверяет один путь. «..» ищется до filepath.Clean: Clean его бы убрал, и
-// путь указал бы на другой файл, чем написал человек.
+// путь указал бы на другой файл, чем написал человек. Принимается только путь с буквой
+// диска: служба открывает файл под SYSTEM, и сетевой путь (\\host\share), канал
+// (\\.\pipe) или путь устройства (\\?\) отдали бы чужому серверу учётные данные машины.
 func cleanAppPath(raw string) (string, error) {
 	p := strings.TrimSpace(raw)
 	bad := func() (string, error) { return "", fmt.Errorf("%w: %s", ErrAppPath, p) }
@@ -61,8 +63,17 @@ func cleanAppPath(raw string) (string, error) {
 			return bad()
 		}
 	}
-	if !filepath.IsAbs(p) || !strings.EqualFold(filepath.Ext(p), ".exe") {
+	if !driveAbs(p) || !strings.EqualFold(filepath.Ext(p), ".exe") {
 		return bad()
 	}
 	return filepath.Clean(p), nil
+}
+
+// driveAbs сообщает, что путь начинается с буквы диска, двоеточия и разделителя.
+func driveAbs(p string) bool {
+	if len(p) < 3 || p[1] != ':' || (p[2] != '\\' && p[2] != '/') {
+		return false
+	}
+	c := p[0] | 0x20 // нижний регистр для латиницы
+	return c >= 'a' && c <= 'z'
 }
