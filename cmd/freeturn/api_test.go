@@ -100,6 +100,10 @@ type testEnv struct {
 	events   *[]emitted
 	opened   *[]string
 	autostar *[]bool
+	// pickPath и pickErr - ответ диалога выбора файла, picked - аргументы его вызовов.
+	pickPath string
+	pickErr  error
+	picked   [][3]string
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -128,6 +132,10 @@ func newEnv(t *testing.T) *testEnv {
 		DesktopDir:   func() (string, error) { return dir, nil },
 		OpenURL:      func(u string) error { *env.opened = append(*env.opened, u); return nil },
 		Now:          func() time.Time { return env.now },
+		PickFile: func(title, filterName, pattern string) (string, error) {
+			env.picked = append(env.picked, [3]string{title, filterName, pattern})
+			return env.pickPath, env.pickErr
+		},
 	})
 	return env
 }
@@ -1094,5 +1102,123 @@ func TestCheckAddressRulesUseResolvedAddrs(t *testing.T) {
 	}
 	if r.Rules.Verdict != split.VerdictDirect || r.Rules.Match.Rule.Value != "93.184.0.0/16" {
 		t.Fatalf("Rules = %+v", r.Rules)
+	}
+}
+
+func TestSaveSettingsCleansApps(t *testing.T) {
+	e := newEnv(t)
+	s := e.api.Settings()
+	s.Options.Apps = []model.AppRule{
+		{Path: `C:\Apps\App.exe`, Comment: " дом "},
+		{Path: "c:/apps/APP.EXE"},
+	}
+	if err := e.api.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	want := []model.AppRule{{Path: `C:\Apps\App.exe`, Comment: "дом"}}
+	if got := e.api.Settings().Options.Apps; !slices.Equal(got, want) {
+		t.Fatalf("Apps = %+v", got)
+	}
+	saved, err := profile.LoadSettings(filepath.Join(e.dir, "settings.json"))
+	if err != nil || !slices.Equal(saved.Options.Apps, want) {
+		t.Fatalf("в файле Apps = %+v, %v", saved.Options.Apps, err)
+	}
+}
+
+func TestSaveSettingsRejectsBadApp(t *testing.T) {
+	e := newEnv(t)
+	s := e.api.Settings()
+	s.Options.Apps = []model.AppRule{{Path: "app.exe"}}
+	if code := apiCode(t, e.api.SaveSettings(s)); code != codeBadApp {
+		t.Fatalf("код %q", code)
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "settings.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("настройки записаны: %v", err)
+	}
+}
+
+func TestSaveSettingsTooManyApps(t *testing.T) {
+	e := newEnv(t)
+	s := e.api.Settings()
+	for i := range split.MaxApps + 1 {
+		s.Options.Apps = append(s.Options.Apps, model.AppRule{Path: fmt.Sprintf(`C:\Apps\app%d.exe`, i)})
+	}
+	if code := apiCode(t, e.api.SaveSettings(s)); code != codeTooManyApps {
+		t.Fatalf("код %q", code)
+	}
+}
+
+func TestSettingsCopiesApps(t *testing.T) {
+	e := newEnv(t)
+	s := e.api.Settings()
+	s.Options.Apps = []model.AppRule{{Path: `C:\Apps\a.exe`}}
+	if err := e.api.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	got := e.api.Settings()
+	got.Options.Apps[0].Path = `C:\Apps\changed.exe`
+	if p := e.api.Settings().Options.Apps[0].Path; p != `C:\Apps\a.exe` {
+		t.Fatalf("настройки API изменились через копию: %s", p)
+	}
+}
+
+func TestOldSettingsWithoutApps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	raw := `{"Options":{"KillSwitch":true}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := profile.LoadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Options.AppsActive() || len(s.Options.Apps) != 0 {
+		t.Fatalf("Apps = %+v", s.Options.Apps)
+	}
+}
+
+func TestConnectSendsApps(t *testing.T) {
+	e := newEnv(t)
+	v := e.importProfile(t, nil)
+	e.complete(t, v.ID)
+	s := e.api.Settings()
+	apps := []model.AppRule{{Path: `C:\Apps\a.exe`, Comment: "игра"}}
+	s.Options.Apps = apps
+	if err := e.api.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.api.Connect(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.svc.connects[0].Options.Apps; !slices.Equal(got, apps) {
+		t.Fatalf("в запросе Apps = %+v", got)
+	}
+}
+
+func TestPickApp(t *testing.T) {
+	e := newEnv(t)
+	if got, err := e.api.PickApp(); got != "" || err != nil {
+		t.Fatalf("отмена: %q, %v", got, err)
+	}
+	want := [3]string{"Выберите программу", "Программы", "*.exe"}
+	if len(e.picked) != 1 || e.picked[0] != want {
+		t.Fatalf("аргументы диалога %v", e.picked)
+	}
+
+	e.pickPath = "c:/apps/./App.exe"
+	if got, err := e.api.PickApp(); got != `c:\apps\App.exe` || err != nil {
+		t.Fatalf("выбор: %q, %v", got, err)
+	}
+
+	e.pickPath = `C:\Apps\readme.txt`
+	_, err := e.api.PickApp()
+	if code := apiCode(t, err); code != codeBadApp {
+		t.Fatalf("не exe: код %q", code)
+	}
+
+	e.pickPath, e.pickErr = "", errors.New("диалог упал")
+	_, err = e.api.PickApp()
+	if code := apiCode(t, err); code != codeSettings {
+		t.Fatalf("сбой диалога: код %q", code)
 	}
 }

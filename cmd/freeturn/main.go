@@ -321,6 +321,13 @@ func run(args []string) error {
 		},
 		DesktopDir: desktopDir,
 		OpenURL:    func(u string) error { return app.Browser.OpenURL(u) },
+		PickFile: func(title, filterName, pattern string) (string, error) {
+			d := app.Dialog.OpenFile().SetTitle(title).AddFilter(filterName, pattern)
+			if win != nil {
+				d = d.AttachToWindow(win)
+			}
+			return d.PromptForSingleSelection()
+		},
 	})
 
 	win = app.Window.NewWithOptions(application.WebviewWindowOptions{

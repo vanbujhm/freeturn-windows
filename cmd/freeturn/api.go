@@ -48,6 +48,8 @@ const (
 	codeSettings       = "settings"
 	codeBusy           = "busy"
 	codeTooManyRules   = "too_many_rules"
+	codeBadApp         = "bad_app"
+	codeTooManyApps    = "too_many_apps"
 )
 
 // Error - ошибка метода API. Через MarshalError уходит в интерфейс как JSON, поэтому у полей
@@ -126,7 +128,10 @@ type apiDeps struct {
 	DesktopDir func() (string, error)
 	// OpenURL открывает адрес в браузере по умолчанию.
 	OpenURL func(string) error
-	Now     func() time.Time
+	// PickFile открывает системный диалог выбора одного файла с фильтром. Пустая строка без
+	// ошибки: человек закрыл диалог.
+	PickFile func(title, filterName, pattern string) (string, error)
+	Now      func() time.Time
 }
 
 // API - сервис, привязанный к интерфейсу. Все экспортируемые методы вызываются из окна.
@@ -138,6 +143,7 @@ type API struct {
 	setAutostart func(bool) error
 	desktopDir   func() (string, error)
 	openURL      func(string) error
+	pickFile     func(title, filterName, pattern string) (string, error)
 	now          func() time.Time
 
 	// profMu сериализует цепочки «прочитать профиль, изменить, записать» и удаление.
@@ -174,6 +180,7 @@ func (a *API) init(d apiDeps) {
 	a.setAutostart = d.SetAutostart
 	a.desktopDir = d.DesktopDir
 	a.openURL = d.OpenURL
+	a.pickFile = d.PickFile
 	a.now = d.Now
 	a.previews = make(map[string]preview)
 	if a.now == nil {
@@ -479,6 +486,7 @@ func (a *API) Connect(id string) error {
 	opts := a.settings.Options
 	a.mu.Unlock()
 	opts.Rules = append([]model.Rule(nil), opts.Rules...)
+	opts.Apps = append([]model.AppRule(nil), opts.Apps...)
 
 	if err := a.svc.Connect(model.ConnectRequest{Profile: p, Options: opts}); err != nil {
 		return serviceError(err)
@@ -531,6 +539,7 @@ func (a *API) Settings() profile.Settings {
 	defer a.mu.Unlock()
 	s := a.settings
 	s.Options.Rules = append([]model.Rule(nil), s.Options.Rules...)
+	s.Options.Apps = append([]model.AppRule(nil), s.Options.Apps...)
 	return s
 }
 
@@ -548,6 +557,11 @@ func (a *API) SaveSettings(s profile.Settings) error {
 		return rerr
 	}
 	s.Options.Rules = rules
+	apps, aerr := sanitizeApps(s.Options.Apps)
+	if aerr != nil {
+		return aerr
+	}
+	s.Options.Apps = apps
 	// Незнакомый режим служба поняла бы как обход, окно показало бы иначе.
 	if s.Options.SplitMode != model.SplitOnly {
 		s.Options.SplitMode = model.SplitBypass
@@ -591,6 +605,38 @@ func sanitizeRules(in []model.Rule) ([]model.Rule, *Error) {
 		return nil, newError(codeTooManyRules, "слишком много правил обхода: не больше 200", nil)
 	}
 	return out, nil
+}
+
+// sanitizeApps проверяет список программ через split.CleanApps и переводит ошибку в код окна.
+func sanitizeApps(in []model.AppRule) ([]model.AppRule, *Error) {
+	out, err := split.CleanApps(in)
+	switch {
+	case errors.Is(err, split.ErrTooManyApps):
+		return nil, newError(codeTooManyApps, err.Error(), err)
+	case err != nil:
+		return nil, newError(codeBadApp, err.Error(), err)
+	}
+	return out, nil
+}
+
+// PickApp открывает выбор программы и возвращает чистый путь к ней. Пустая строка: человек
+// закрыл диалог. В настройки путь попадает только через SaveSettings.
+func (a *API) PickApp() (string, error) {
+	if a.pickFile == nil {
+		return "", newError(codeSettings, "не удалось открыть выбор файла", nil)
+	}
+	path, err := a.pickFile("Выберите программу", "Программы", "*.exe")
+	if err != nil {
+		return "", newError(codeSettings, "не удалось открыть выбор файла", err)
+	}
+	if path == "" {
+		return "", nil
+	}
+	apps, aerr := sanitizeApps([]model.AppRule{{Path: path}})
+	if aerr != nil {
+		return "", aerr
+	}
+	return apps[0].Path, nil
 }
 
 // ClassifyRule определяет вид правила обхода по вводу человека.
