@@ -106,6 +106,7 @@ describe("describeWarning", () => {
 
   test("правило и домен называются в тексте", () => {
     expect(describeWarning({ Code: "rule_skipped", Value: "0.0.0.0/0" })).toContain("0.0.0.0/0");
+    expect(describeWarning({ Code: "app_skipped", Value: "C:\\Apps\\a.exe" })).toContain("C:\\Apps\\a.exe");
     expect(describeWarning({ Code: "domain_unresolved", Value: "example.com" })).toContain("example.com");
   });
 

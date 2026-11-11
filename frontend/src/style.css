@@ -585,6 +585,14 @@ textarea.input {
   margin-top: 4px;
 }
 
+.apps {
+  margin-top: 8px;
+}
+
+.app-path {
+  overflow-wrap: anywhere;
+}
+
 .row.wrap {
   flex-wrap: wrap;
 }

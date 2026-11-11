@@ -7,9 +7,15 @@ const saveSettings = vi.fn(async (s: unknown) => {
   saved.push(s);
 });
 const classify = vi.hoisted(() => vi.fn());
+const pickApp = vi.hoisted(() => vi.fn());
 
 vi.mock("../api", () => ({
-  API: { SaveSettings: (s: unknown) => saveSettings(s), ClassifyRule: (v: string) => classify(v), CheckAddress: vi.fn() },
+  API: {
+    SaveSettings: (s: unknown) => saveSettings(s),
+    ClassifyRule: (v: string) => classify(v),
+    CheckAddress: vi.fn(),
+    PickApp: () => pickApp(),
+  },
   fail: vi.fn(),
   loadSettings: async () => {
     const { state, notify } = await import("../store");
@@ -48,6 +54,7 @@ beforeEach(() => {
     saved.push(s);
   });
   classify.mockReset();
+  pickApp.mockReset();
   state.settings = initial();
   state.status = { Phase: "idle" };
 });
@@ -270,5 +277,44 @@ describe("карточка правила", () => {
     s.Options.SplitMode = "";
     notify("settings");
     expect(warn.hidden).toBe(true);
+  });
+});
+
+describe("раздел программ на экране маршрутизации", () => {
+  test("стоит после списка правил", () => {
+    const el = mount();
+    const apps = q(el, "section.apps");
+    const ruleCard = q(el, ".rule");
+    expect(ruleCard.compareDocumentPosition(apps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("пока записывается правило, выбор программы не открывается", async () => {
+    let release!: () => void;
+    saveSettings.mockImplementation(
+      (s: unknown) =>
+        new Promise<void>((r) => {
+          saved.push(s);
+          release = r;
+        }),
+    );
+    const el = mount();
+    q<HTMLInputElement>(el, ".rule .switch-input").click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+    expect(q<HTMLButtonElement>(el, ".apps-add").disabled).toBe(true);
+    q<HTMLButtonElement>(el, ".apps-add").click();
+    expect(pickApp).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>(el, ".apps-add").disabled).toBe(false));
+  });
+
+  test("добавленная программа попадает в настройки рядом с правилами", async () => {
+    pickApp.mockResolvedValue("C:\\Apps\\App.exe");
+    const el = mount();
+    q<HTMLButtonElement>(el, ".apps-add").click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
+    const opts = (saved[0] as { Options: { Apps: unknown[]; Rules: unknown[] } }).Options;
+    expect(opts.Apps).toEqual([{ Path: "C:\\Apps\\App.exe", Comment: "", Off: false }]);
+    expect(opts.Rules).toHaveLength(1);
+    await vi.waitFor(() => expect(el.querySelectorAll(".app")).toHaveLength(1));
   });
 });

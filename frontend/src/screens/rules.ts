@@ -3,6 +3,7 @@
 import type { Rule } from "../../bindings/github.com/vanbujhm/freeturn-windows/internal/model/models.js";
 import { API, fail, loadSettings } from "../api";
 import { h, toast } from "../dom";
+import { createApps } from "./apps";
 import { createCheck } from "./check";
 import { createCommentEditor } from "./comment-editor";
 import { type SplitMode, splitView, withSplit } from "../state";
@@ -75,6 +76,7 @@ export function createRules(): Screen {
   const notice = h("p", { class: "muted small-text", text: S.rules.appliesNext, hidden: true });
   const allOff = h("p", { class: "small-text warn-text rules-all-off", text: S.rules.allOffOnly, hidden: true });
   const list = h("div", { class: "stack" });
+  const apps = createApps({ busy: () => busy, exclusive, save: (next) => save(next) });
 
   const el = h(
     "section",
@@ -87,6 +89,7 @@ export function createRules(): Screen {
     notice,
     allOff,
     list,
+    apps.el,
     h("div", { class: "callout stack" }, ...S.rules.hint.map((t) => h("p", { class: "small-text", text: t }))),
   );
 
@@ -124,6 +127,23 @@ export function createRules(): Screen {
     render();
     try {
       await save(withSplit(cur, patch));
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  // exclusive выполняет запись раздела программ: пока она идёт, правила и режим недоступны, и
+  // наоборот.
+  async function exclusive(fn: () => Promise<void>): Promise<void> {
+    if (busy || !state.settings) {
+      render();
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      await fn();
     } finally {
       busy = false;
       render();
@@ -253,6 +273,7 @@ export function createRules(): Screen {
     modeHint.textContent = view.mode === "only" ? S.rules.modeOnlyHint : S.rules.modeBypassHint;
     modeWarn.hidden = !(view.on && view.mode === "only" && s?.Options.KillSwitch);
 
+    apps.render();
     const live = ["connecting", "captcha", "connected", "reconnecting"].includes(state.status.Phase);
     notice.hidden = !live;
     const saved = s?.Options.Rules ?? [];
