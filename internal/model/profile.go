@@ -58,6 +58,14 @@ type Rule struct {
 	Off bool
 }
 
+// AppRule - программа, которая во время сеанса выходит в сеть только через туннель.
+type AppRule struct {
+	Path    string // абсолютный путь к .exe
+	Comment string
+	// Off: программа хранится в списке, но не ограничивается.
+	Off bool
+}
+
 // SplitMode задаёт, куда идут адреса из списка правил.
 type SplitMode string
 
@@ -77,6 +85,25 @@ type Options struct {
 	// и весь трафик идёт через туннель.
 	SplitOff  bool
 	SplitMode SplitMode
+	// Apps - программы только через туннель. Действуют и при выключенном раздельном
+	// туннелировании: блок программ от правил не зависит.
+	Apps []AppRule
+}
+
+// ActiveApps возвращает пути программ, которые ограничиваются в подключении.
+func (o Options) ActiveApps() []string {
+	var out []string
+	for _, a := range o.Apps {
+		if !a.Off {
+			out = append(out, a.Path)
+		}
+	}
+	return out
+}
+
+// AppsActive сообщает, что хотя бы одна программа ограничивается.
+func (o Options) AppsActive() bool {
+	return len(o.ActiveApps()) > 0
 }
 
 // ActiveRules возвращает правила, которые действуют в подключении.

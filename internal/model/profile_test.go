@@ -28,3 +28,22 @@ func TestOptionsSplitModes(t *testing.T) {
 		})
 	}
 }
+
+func TestActiveApps(t *testing.T) {
+	o := Options{SplitOff: true, Apps: []AppRule{
+		{Path: `C:\one.exe`}, {Path: `C:\two.exe`, Off: true}, {Path: `C:\three.exe`},
+	}}
+	if got := o.ActiveApps(); len(got) != 2 || got[0] != `C:\one.exe` || got[1] != `C:\three.exe` {
+		t.Errorf("ActiveApps = %v", got)
+	}
+	if !o.AppsActive() {
+		t.Error("AppsActive = false при включённых программах")
+	}
+	off := Options{Apps: []AppRule{{Path: `C:\two.exe`, Off: true}}}
+	if off.AppsActive() || len(off.ActiveApps()) != 0 {
+		t.Errorf("выключенная программа действует: %v", off.ActiveApps())
+	}
+	if (Options{}).AppsActive() || len(Options{}.ActiveApps()) != 0 {
+		t.Error("пустой список действует")
+	}
+}

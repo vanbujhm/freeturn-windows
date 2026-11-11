@@ -40,6 +40,7 @@ const (
 	WarnDomainUnresolved WarningCode = "domain_unresolved"
 	WarnStaleHandshake   WarningCode = "stale_handshake"
 	WarnNoDNS            WarningCode = "no_dns"
+	WarnAppSkipped       WarningCode = "app_skipped"
 )
 
 // Warning — предупреждение с необязательным значением (правило, домен).
