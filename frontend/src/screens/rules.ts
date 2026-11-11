@@ -4,6 +4,7 @@ import type { Rule } from "../../bindings/github.com/vanbujhm/freeturn-windows/i
 import { API, fail, loadSettings } from "../api";
 import { h, toast } from "../dom";
 import { createCheck } from "./check";
+import { createCommentEditor } from "./comment-editor";
 import { type SplitMode, splitView, withSplit } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
@@ -68,9 +69,6 @@ export function createRules(): Screen {
     "aria-label": S.rules.commentPlaceholder,
   });
   const addBtn = h("button", { class: "btn primary", type: "button", text: S.rules.add });
-  // Открытое поле комментария одно. Оно живёт между перерисовками, чтобы ввод не терялся.
-  let editing: Rule | null = null;
-  let editInput: HTMLInputElement | null = null;
   // Правка правила, которая сейчас записывается. Список показывает её сразу: иначе
   // переключатель на время записи возвращался бы в прежнее положение.
   let pending: { rule: Rule; patch: Partial<Rule> } | null = null;
@@ -176,6 +174,14 @@ export function createRules(): Screen {
   }
 
   const same = (a: Rule, b: Rule) => a.Kind === b.Kind && a.Value === b.Value;
+  const editor = createCommentEditor<Rule>({
+    same,
+    comment: (r) => r.Comment ?? "",
+    label: (r) => `${S.rules.editComment}: ${r.Value}`,
+    busy: () => busy,
+    save: (r, comment) => void updateRule(r, { Comment: comment }),
+    render,
+  });
 
   // updateRule меняет одно правило, найденное по виду и значению.
   async function updateRule(rule: Rule, patch: Partial<Rule>): Promise<void> {
@@ -196,45 +202,14 @@ export function createRules(): Screen {
     }
   }
 
-  function startEdit(rule: Rule): void {
-    const field = h("input", {
-      class: "input rule-comment-input",
-      type: "text",
-      maxlength: "80",
-      placeholder: S.rules.commentPlaceholder,
-      "aria-label": `${S.rules.editComment}: ${rule.Value}`,
-    });
-    field.value = rule.Comment ?? "";
-    field.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        // Идёт другая запись: поле остаётся открытым, Enter сработает после неё.
-        if (busy) return;
-        const value = field.value.trim();
-        editing = editInput = null;
-        void updateRule(rule, { Comment: value });
-      } else if (e.key === "Escape") {
-        editing = editInput = null;
-        render();
-      }
-    });
-    editing = rule;
-    editInput = field;
-    render();
-    field.focus();
-  }
-
   function ruleCard(r: Rule): HTMLElement {
     const s = state.settings;
     const toggle = h("input", { type: "checkbox", class: "switch-input", "aria-label": `${S.rules.ruleOn}: ${r.Value}` });
     toggle.checked = !r.Off;
     toggle.disabled = !s || busy;
     toggle.addEventListener("change", () => void updateRule(r, { Off: !toggle.checked }));
-    const edited = editing !== null && same(editing, r);
-    const comment = edited
-      ? editInput
-      : r.Comment
-        ? h("span", { class: "muted small-text rule-comment", text: r.Comment })
-        : null;
+    const comment =
+      editor.field(r) ?? (r.Comment ? h("span", { class: "muted small-text rule-comment", text: r.Comment }) : null);
     return h(
       "div",
       { class: r.Off ? "card row between rule dim" : "card row between rule" },
@@ -252,7 +227,7 @@ export function createRules(): Screen {
         text: S.rules.editComment,
         disabled: !s || busy,
         "aria-label": `${S.rules.editComment}: ${r.Value}`,
-        onclick: () => startEdit(r),
+        onclick: () => editor.start(r),
       }),
       h("button", {
         class: "btn danger-text",
@@ -289,18 +264,7 @@ export function createRules(): Screen {
       list.replaceChildren(h("p", { class: "muted center-text", text: empty }));
       return;
     }
-    // Перестройка списка снимает фокус с открытого поля комментария, даже если оно
-    // переносится в новую карточку. Статус приходит каждую секунду, поэтому фокус и курсор
-    // возвращаются на место.
-    const field = editInput;
-    const focused = field !== null && document.activeElement === field;
-    const start = field?.selectionStart ?? null;
-    const end = field?.selectionEnd ?? null;
-    list.replaceChildren(...rules.map(ruleCard));
-    if (focused && field.isConnected) {
-      field.focus();
-      if (start !== null && end !== null) field.setSelectionRange(start, end);
-    }
+    editor.rebuild(list, () => rules.map(ruleCard));
   }
 
   subscribe("settings", render);
