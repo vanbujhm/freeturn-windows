@@ -91,6 +91,10 @@ type session struct {
 	undo      []func()
 	holdBlock bool // сбой не снимает блокировку
 	keepBlock bool // решение для текущего отката
+	// kill: сессия брандмауэра держит kill switch. Он стоит, пока держится блокировка от
+	// прошлого подключения или от ArmBlock, и с шага 5, если его включил человек.
+	kill bool
+	apps []string // программы только через туннель, без выключенных
 
 	listening   bool // события ядра принимаются
 	coreSeen    bool
@@ -155,15 +159,20 @@ func (s *session) bypass() []netip.Prefix {
 	return s.listed()
 }
 
-// firewallOptions собирает разрешения блокировки для текущих адресов.
+// firewallOptions собирает сессию брандмауэра для текущих адресов. DNS конфига ограничивает
+// запросы только когда есть адаптер: до него запрос к DNS конфига всё равно не дошёл бы.
 func (s *session) firewallOptions() firewall.Options {
-	return firewall.Options{
+	o := firewall.Options{
 		TunLUID:    s.luid,
-		DNS:        s.cfg.DNS,
 		AllowLAN:   s.req.Options.AllowLAN,
 		Bypass:     s.bypass(),
-		KillSwitch: true,
+		KillSwitch: s.kill,
+		Apps:       s.apps,
 	}
+	if s.luid != 0 {
+		o.DNS = s.cfg.DNS
+	}
+	return o
 }
 
 // restingPhase - фаза, в которую сессия возвращается после капчи.
@@ -450,6 +459,9 @@ func (e *Engine) establish(s *session) error {
 	if err := e.prepare(s); err != nil {
 		return err
 	}
+	if err := e.guardApps(s); err != nil {
+		return err
+	}
 	if err := e.startCore(s); err != nil {
 		return err
 	}
@@ -459,11 +471,66 @@ func (e *Engine) establish(s *session) error {
 	if err := e.applyNetwork(s); err != nil {
 		return err
 	}
+	if err := e.settleBlock(s); err != nil {
+		return err
+	}
 	// Последняя проверка отмены позади. Сбой раньше этой строки это сбой подключения, он не
 	// оставляет новой блокировки. Дальше блокировка зависит только от выбора в подключении.
+	e.mu.Lock()
 	s.holdBlock = s.req.Options.Blocks()
-	if !s.holdBlock {
+	s.kill = s.holdBlock
+	apps := len(s.apps) > 0
+	e.mu.Unlock()
+	if !s.holdBlock && !apps {
 		e.fwClear() // блокировка от прошлого подключения
+	}
+	return nil
+}
+
+// guardApps - начало сеанса: программам из списка закрывается всё, кроме loopback, ещё до
+// ядра и адаптера. Блокировка от прошлого подключения или от ArmBlock остаётся, свой kill
+// switch подключение включит только на шаге 5: иначе сеть пропала бы на время разрешения
+// доменов. Программы без файла пропускаются с предупреждением, один раз за сеанс.
+func (e *Engine) guardApps(s *session) error {
+	e.mu.Lock()
+	s.kill = s.holdBlock
+	opts := s.firewallOptions()
+	e.mu.Unlock()
+	if len(opts.Apps) == 0 {
+		return nil
+	}
+	s.push(func() {
+		if !s.keepBlock {
+			e.fwDisable()
+		}
+	})
+	skipped, err := e.fwApply(opts)
+	if err != nil {
+		return failed(model.ErrAdapter, err)
+	}
+	for _, path := range skipped {
+		e.warn(model.WarnAppSkipped, path)
+		e.logf(levelWarn, "программа пропущена (файл не найден): "+path)
+	}
+	return s.stopped()
+}
+
+// settleBlock снимает чужой kill switch после успеха шага 5, когда подключение началось
+// под блокировкой, а в нём самом kill switch выключен. Блок программ остаётся. Без программ
+// сессию целиком снимает fwClear.
+func (e *Engine) settleBlock(s *session) error {
+	e.mu.Lock()
+	need := !s.req.Options.Blocks() && s.kill && len(s.apps) > 0
+	if need {
+		s.kill = false
+	}
+	opts := s.firewallOptions()
+	e.mu.Unlock()
+	if !need {
+		return nil
+	}
+	if _, err := e.fwApply(opts); err != nil {
+		return failed(model.ErrAdapter, err)
 	}
 	return nil
 }
@@ -479,10 +546,16 @@ func (e *Engine) prepare(s *session) error {
 		return &failure{code: model.ErrBadProfile, msg: configMask(p.WGConfig).Mask(err.Error())}
 	}
 	rules := split.Compile(s.req.Options.ActiveRules())
+	// Программы проверяются заново: служба не доверяет окну.
+	apps, err := split.CleanApps(s.req.Options.Apps)
+	if err != nil {
+		return &failure{code: model.ErrBadProfile, msg: "список программ: " + err.Error()}
+	}
+	active := model.Options{Apps: apps}.ActiveApps()
 
 	e.mu.Lock()
 	e.mask = secretmask.ForProfile(p, cfg)
-	s.cfg, s.rules = cfg, rules
+	s.cfg, s.rules, s.apps = cfg, rules, active
 	e.mu.Unlock()
 
 	for _, skip := range rules.Skipped {
@@ -635,9 +708,10 @@ func (e *Engine) applyNetwork(s *session) error {
 	}
 
 	e.mu.Lock()
+	s.kill = s.kill || s.req.Options.Blocks()
 	opts := s.firewallOptions()
 	e.mu.Unlock()
-	if s.req.Options.Blocks() {
+	if s.req.Options.Blocks() || len(opts.Apps) > 0 {
 		if _, err := e.fwApply(opts); err != nil {
 			return failed(model.ErrAdapter, err)
 		}
