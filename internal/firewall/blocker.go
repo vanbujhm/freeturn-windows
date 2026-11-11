@@ -109,11 +109,13 @@ func registerBaseObjects(session uintptr) (*baseObjects, error) {
 // installSession открывает динамическую сессию и ставит все правила одной транзакцией.
 // Правила живут, пока жива сессия: они исчезают и при падении процесса. Ключи провайдера
 // и подуровня у каждой сессии свои: ключи WFP уникальны во всей системе, а Update держит
-// старую и новую сессии одновременно.
-func installSession(o Options) (uintptr, error) {
+// старую и новую сессии одновременно. Программы, для которых нет файла, пропускаются и
+// возвращаются вызывающему.
+func installSession(o Options) (uintptr, []string, error) {
+	skipped := missingApps(o.Apps)
 	session, err := createWfpSession()
 	if err != nil {
-		return 0, wrapErr(err)
+		return 0, nil, wrapErr(err)
 	}
 
 	objectInstaller := func(session uintptr) error {
@@ -133,10 +135,10 @@ func installSession(o Options) (uintptr, error) {
 	err = runTransaction(session, objectInstaller)
 	if err != nil {
 		fwpmEngineClose0(session)
-		return 0, wrapErr(err)
+		return 0, nil, wrapErr(err)
 	}
 
-	return session, nil
+	return session, skipped, nil
 }
 
 // guard хранит состояние блокировки. WFP вынесен в поля, чтобы порядок действий
@@ -150,7 +152,7 @@ type guard struct {
 	mu           sync.Mutex // защищает session и epoch, не держится при вызовах WFP
 	session      uintptr
 	epoch        uint64 // число вызовов Disable
-	install      func(o Options) (uintptr, error)
+	install      func(o Options) (uintptr, []string, error)
 	closeSession func(session uintptr)
 }
 
@@ -159,13 +161,14 @@ var current = guard{
 	closeSession: func(session uintptr) { fwpmEngineClose0(session) },
 }
 
-// Enable включает блокировку. Если она уже включена, возвращает ошибку.
-func Enable(o Options) error { return current.enable(o) }
+// Enable ставит сессию. Если она уже стоит, возвращает ошибку. skipped: программы из
+// o.Apps, для которых нет файла; остальное ставится без них.
+func Enable(o Options) (skipped []string, err error) { return current.enable(o) }
 
-// Update меняет разрешения: создаёт новую сессию и только после её успеха закрывает
-// старую, поэтому блокировка не прерывается. При сбое старая сессия остаётся.
-// Если блокировка выключена, работает как Enable.
-func Update(o Options) error { return current.update(o) }
+// Update меняет сессию: создаёт новую и только после её успеха закрывает старую, поэтому
+// блокировка не прерывается. При сбое старая сессия остаётся. Если сессии нет, работает
+// как Enable.
+func Update(o Options) (skipped []string, err error) { return current.update(o) }
 
 // Disable снимает блокировку.
 func Disable() { current.disable() }
@@ -173,17 +176,17 @@ func Disable() { current.disable() }
 // Enabled сообщает, включена ли блокировка.
 func Enabled() bool { return current.enabled() }
 
-func (g *guard) enable(o Options) error {
+func (g *guard) enable(o Options) ([]string, error) {
 	g.installMu.Lock()
 	defer g.installMu.Unlock()
 	session, epoch := g.snapshot()
 	if session != 0 {
-		return errors.New("The firewall has already been enabled")
+		return nil, errors.New("The firewall has already been enabled")
 	}
 	return g.replace(o, epoch)
 }
 
-func (g *guard) update(o Options) error {
+func (g *guard) update(o Options) ([]string, error) {
 	g.installMu.Lock()
 	defer g.installMu.Unlock()
 	_, epoch := g.snapshot()
@@ -197,17 +200,17 @@ func (g *guard) snapshot() (session uintptr, epoch uint64) {
 }
 
 // replace ставит новую сессию и только после успеха закрывает прежнюю, если она была.
-func (g *guard) replace(o Options, epoch uint64) error {
-	session, err := g.install(o)
+func (g *guard) replace(o Options, epoch uint64) ([]string, error) {
+	session, skipped, err := g.install(o)
 	if err != nil {
-		return wrapErr(err)
+		return nil, wrapErr(err)
 	}
 
 	g.mu.Lock()
 	if g.epoch != epoch {
 		g.mu.Unlock()
 		g.closeSession(session)
-		return errDisabledDuringInstall
+		return nil, errDisabledDuringInstall
 	}
 	old := g.session
 	g.session = session
@@ -216,7 +219,7 @@ func (g *guard) replace(o Options, epoch uint64) error {
 	if old != 0 {
 		g.closeSession(old)
 	}
-	return nil
+	return skipped, nil
 }
 
 func (g *guard) disable() {

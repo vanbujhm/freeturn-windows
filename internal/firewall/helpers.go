@@ -167,16 +167,35 @@ func getCurrentProcessAppID() (*wtFwpByteBlob, error) {
 	if err != nil {
 		return nil, wrapErr(err)
 	}
+	return appIDFromPath(currentFile)
+}
 
-	curFilePtr, err := windows.UTF16PtrFromString(currentFile)
+// appIDFromPath даёт app id файла для условия ALE_APP_ID. Память освобождает вызывающий
+// через fwpmFreeMemory0. Файла нет: ошибка.
+func appIDFromPath(path string) (*wtFwpByteBlob, error) {
+	filePtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, wrapErr(err)
 	}
 
 	var appID *wtFwpByteBlob
-	err = fwpmGetAppIdFromFileName0(curFilePtr, unsafe.Pointer(&appID))
+	err = fwpmGetAppIdFromFileName0(filePtr, unsafe.Pointer(&appID))
 	if err != nil {
 		return nil, wrapErr(err)
 	}
 	return appID, nil
+}
+
+// missingApps возвращает пути, для которых app id не получить, в порядке списка.
+func missingApps(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		id, err := appIDFromPath(p)
+		if err != nil {
+			out = append(out, p)
+			continue
+		}
+		fwpmFreeMemory0(unsafe.Pointer(&id))
+	}
+	return out
 }

@@ -297,9 +297,10 @@ func (f *fakeNet) bypassed() []netip.Prefix {
 }
 
 type fakeFirewall struct {
-	log  *calls
-	mu   sync.Mutex
-	opts []firewall.Options // аргументы Enable и Update по порядку
+	log     *calls
+	mu      sync.Mutex
+	opts    []firewall.Options // аргументы Enable и Update по порядку
+	skipped []string           // что Enable и Update сообщают пропущенным
 }
 
 func (f *fakeFirewall) save(o firewall.Options) {
@@ -308,14 +309,22 @@ func (f *fakeFirewall) save(o firewall.Options) {
 	f.opts = append(f.opts, o)
 }
 
-func (f *fakeFirewall) Enable(o firewall.Options) error {
-	f.save(o)
-	return f.log.hit("fw.enable")
+func (f *fakeFirewall) Enable(o firewall.Options) ([]string, error) {
+	return f.answer(o, "fw.enable")
 }
 
-func (f *fakeFirewall) Update(o firewall.Options) error {
+func (f *fakeFirewall) Update(o firewall.Options) ([]string, error) {
+	return f.answer(o, "fw.update")
+}
+
+func (f *fakeFirewall) answer(o firewall.Options, name string) ([]string, error) {
 	f.save(o)
-	return f.log.hit("fw.update")
+	if err := f.log.hit(name); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.skipped, nil
 }
 
 func (f *fakeFirewall) Disable() { _ = f.log.hit("fw.disable") }

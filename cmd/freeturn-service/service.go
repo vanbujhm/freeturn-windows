@@ -202,9 +202,9 @@ func (sysNet) FakeIPTunnel(exclude uint64) (string, bool) { return netcfg.FakeIP
 // sysFirewall закрывает engine.Firewall функциями firewall.
 type sysFirewall struct{}
 
-func (sysFirewall) Enable(o firewall.Options) error { return firewall.Enable(o) }
-func (sysFirewall) Update(o firewall.Options) error { return firewall.Update(o) }
-func (sysFirewall) Disable()                        { firewall.Disable() }
+func (sysFirewall) Enable(o firewall.Options) ([]string, error) { return firewall.Enable(o) }
+func (sysFirewall) Update(o firewall.Options) ([]string, error) { return firewall.Update(o) }
+func (sysFirewall) Disable()                                    { firewall.Disable() }
 
 // sysTunnels закрывает engine.Tunnels функцией tunnel.Open.
 type sysTunnels struct {

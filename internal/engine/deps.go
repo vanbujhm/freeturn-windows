@@ -52,11 +52,12 @@ type Network interface {
 	BestRoute(dst netip.Addr) (luid uint64, onLink bool, err error)
 }
 
-// Firewall ставит и снимает kill switch. Движок не вызывает его методы одновременно, кроме
-// одного случая: Disable во время установки, которая не кончилась за FirewallGrace.
+// Firewall ставит и снимает сессию брандмауэра: kill switch и блок программ. Движок не
+// вызывает его методы одновременно, кроме одного случая: Disable во время установки, которая
+// не кончилась за FirewallGrace. Enable и Update возвращают программы, пропущенные без файла.
 type Firewall interface {
-	Enable(firewall.Options) error
-	Update(firewall.Options) error
+	Enable(firewall.Options) ([]string, error)
+	Update(firewall.Options) ([]string, error)
 	Disable()
 }
 

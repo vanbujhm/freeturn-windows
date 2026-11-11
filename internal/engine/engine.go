@@ -158,10 +158,11 @@ func (s *session) bypass() []netip.Prefix {
 // firewallOptions собирает разрешения блокировки для текущих адресов.
 func (s *session) firewallOptions() firewall.Options {
 	return firewall.Options{
-		TunLUID:  s.luid,
-		DNS:      s.cfg.DNS,
-		AllowLAN: s.req.Options.AllowLAN,
-		Bypass:   s.bypass(),
+		TunLUID:    s.luid,
+		DNS:        s.cfg.DNS,
+		AllowLAN:   s.req.Options.AllowLAN,
+		Bypass:     s.bypass(),
+		KillSwitch: true,
 	}
 }
 
@@ -396,7 +397,7 @@ func (e *Engine) ArmBlock(o model.Options) error {
 	if !o.TunnelOnly() {
 		bypass = split.Compile(o.ActiveRules()).Prefixes
 	}
-	err := e.fwApply(firewall.Options{AllowLAN: o.AllowLAN, Bypass: bypass})
+	_, err := e.fwApply(firewall.Options{AllowLAN: o.AllowLAN, Bypass: bypass, KillSwitch: true})
 	if err != nil {
 		// Окно всё равно должно прислать профиль, иначе туннель не вернётся.
 		e.logf(levelError, "блокировка не восстановлена: "+err.Error())
@@ -637,7 +638,7 @@ func (e *Engine) applyNetwork(s *session) error {
 	opts := s.firewallOptions()
 	e.mu.Unlock()
 	if s.req.Options.Blocks() {
-		if err := e.fwApply(opts); err != nil {
+		if _, err := e.fwApply(opts); err != nil {
 			return failed(model.ErrAdapter, err)
 		}
 		if err := s.stopped(); err != nil {
@@ -777,24 +778,26 @@ func (e *Engine) detailFor(f *failure) string {
 }
 
 // fwInstall выполняет Enable или Update и отмечает, что установка идёт. Вызывается под fwMu.
-func (e *Engine) fwInstall(call func(firewall.Options) error, o firewall.Options) error {
+func (e *Engine) fwInstall(call func(firewall.Options) ([]string, error), o firewall.Options) ([]string, error) {
 	e.fwBusy.Store(true)
 	defer e.fwBusy.Store(false)
 	return call(o)
 }
 
-// fwApply ставит блокировку, а если она уже стоит, обновляет разрешения.
-func (e *Engine) fwApply(o firewall.Options) error {
+// fwApply ставит сессию, а если она уже стоит, обновляет её. Возвращает программы,
+// пропущенные без файла.
+func (e *Engine) fwApply(o firewall.Options) ([]string, error) {
 	e.fwMu.Lock()
 	defer e.fwMu.Unlock()
 	if e.fwOn {
 		return e.fwInstall(e.d.FW.Update, o)
 	}
-	if err := e.fwInstall(e.d.FW.Enable, o); err != nil {
-		return err
+	skipped, err := e.fwInstall(e.d.FW.Enable, o)
+	if err != nil {
+		return nil, err
 	}
 	e.fwOn = true
-	return nil
+	return skipped, nil
 }
 
 // fwRefresh обновляет разрешения стоящей блокировки. Снятую не трогает: опоздавшее
@@ -805,7 +808,8 @@ func (e *Engine) fwRefresh(o firewall.Options) error {
 	if !e.fwOn {
 		return nil
 	}
-	return e.fwInstall(e.d.FW.Update, o)
+	_, err := e.fwInstall(e.d.FW.Update, o)
+	return err
 }
 
 // fwDisable снимает блокировку. Снятие без блокировки безопасно.

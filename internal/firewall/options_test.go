@@ -3,6 +3,7 @@ package firewall
 import (
 	"errors"
 	"net/netip"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -15,10 +16,12 @@ import (
 
 // allSteps включает все необязательные шаги.
 var allSteps = Options{
-	TunLUID:  7,
-	DNS:      []netip.Addr{netip.MustParseAddr("203.0.113.53")},
-	AllowLAN: true,
-	Bypass:   []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
+	TunLUID:    7,
+	DNS:        []netip.Addr{netip.MustParseAddr("203.0.113.53")},
+	AllowLAN:   true,
+	Bypass:     []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
+	KillSwitch: true,
+	Apps:       []string{`C:\Apps\one.exe`},
 }
 
 func stepNames(steps []step) []string {
@@ -54,7 +57,7 @@ func TestBuildPermitsSkipsTunWhenZero(t *testing.T) {
 }
 
 func TestBuildPermitsIncludesBypassAndLAN(t *testing.T) {
-	want := []string{"service", "dns", "loopback", "tun", "dhcp", "ndp", "lan", "bypass", "blockAll"}
+	want := []string{"service", "dns", "loopback", "tun", "dhcp", "ndp", "lan", "apps", "bypass", "blockAll"}
 	if got := stepNames(buildSteps(allSteps)); !slices.Equal(got, want) {
 		t.Fatalf("шаги %v, ожидалось %v", got, want)
 	}
@@ -62,8 +65,55 @@ func TestBuildPermitsIncludesBypassAndLAN(t *testing.T) {
 
 func TestBuildStepsMinimal(t *testing.T) {
 	want := []string{"service", "loopback", "dhcp", "ndp", "blockAll"}
-	if got := stepNames(buildSteps(Options{})); !slices.Equal(got, want) {
+	if got := stepNames(buildSteps(Options{KillSwitch: true})); !slices.Equal(got, want) {
 		t.Fatalf("шаги %v, ожидалось %v", got, want)
+	}
+}
+
+// Без kill switch сессия держит только блок программ: остальной трафик не меняется.
+func TestBuildStepsWithoutKillSwitch(t *testing.T) {
+	o := allSteps
+	o.KillSwitch = false
+	want := []string{"service", "loopback", "tun", "lan", "apps"}
+	if got := stepNames(buildSteps(o)); !slices.Equal(got, want) {
+		t.Fatalf("шаги %v, ожидалось %v", got, want)
+	}
+	want = []string{"service", "loopback", "apps"}
+	if got := stepNames(buildSteps(Options{Apps: allSteps.Apps})); !slices.Equal(got, want) {
+		t.Fatalf("только программы: шаги %v, ожидалось %v", got, want)
+	}
+}
+
+// Блок программ ниже разрешений, которые должны их пропускать (туннель, loopback, LAN), и
+// выше обхода: адрес из обхода программе закрыт.
+func TestAppsBelowPermitsAboveBypass(t *testing.T) {
+	steps := buildSteps(allSteps)
+	byName := map[string]step{}
+	for _, s := range steps {
+		byName[s.name] = s
+	}
+	apps := byName["apps"]
+	for _, name := range []string{"service", "loopback", "tun", "lan"} {
+		if byName[name].weight <= apps.weight {
+			t.Errorf("%s: вес %d не выше блока программ %d", name, byName[name].weight, apps.weight)
+		}
+	}
+	if byName["bypass"].weight >= apps.weight {
+		t.Errorf("обход: вес %d не ниже блока программ %d", byName["bypass"].weight, apps.weight)
+	}
+}
+
+func TestMissingApps(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := `C:\no-such-dir\missing.exe`
+	if got := missingApps([]string{self, missing}); !slices.Equal(got, []string{missing}) {
+		t.Fatalf("missingApps = %v", got)
+	}
+	if got := missingApps(nil); len(got) != 0 {
+		t.Fatalf("missingApps(nil) = %v", got)
 	}
 }
 
@@ -95,7 +145,8 @@ func TestStepWeights(t *testing.T) {
 		{"dhcp", 12, 0},
 		{"ndp", 12, 0},
 		{"lan", 12, 0},
-		{"bypass", 12, 0},
+		{"apps", 11, 0},
+		{"bypass", 10, 0},
 		{"blockAll", 0, 0},
 	}
 	var got []weights
@@ -219,24 +270,25 @@ type fakeEngine struct {
 	log     []string
 	next    uintptr
 	fail    error
-	hold    func() // вызывается внутри install, чтобы задержать установку
+	skipped []string // что install сообщает пропущенным
+	hold    func()   // вызывается внутри install, чтобы задержать установку
 	options []Options
 	closed  []uintptr
 }
 
 func (f *fakeEngine) guard() *guard {
 	return &guard{
-		install: func(o Options) (uintptr, error) {
+		install: func(o Options) (uintptr, []string, error) {
 			f.log = append(f.log, "install")
 			if f.hold != nil {
 				f.hold()
 			}
 			if f.fail != nil {
-				return 0, f.fail
+				return 0, f.skipped, f.fail
 			}
 			f.options = append(f.options, o)
 			f.next++
-			return f.next, nil
+			return f.next, f.skipped, nil
 		},
 		closeSession: func(session uintptr) {
 			f.log = append(f.log, "close")
@@ -248,10 +300,10 @@ func (f *fakeEngine) guard() *guard {
 func TestEnableTwiceIsAnError(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.enable(Options{}); err == nil {
+	if _, err := g.enable(Options{}); err == nil {
 		t.Fatal("повторное включение должно давать ошибку")
 	}
 	if !slices.Equal(f.log, []string{"install"}) || !g.enabled() {
@@ -262,7 +314,7 @@ func TestEnableTwiceIsAnError(t *testing.T) {
 func TestUpdateWhenDisabledActsLikeEnable(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
-	if err := g.update(Options{AllowLAN: true}); err != nil {
+	if _, err := g.update(Options{AllowLAN: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !g.enabled() || !slices.Equal(f.log, []string{"install"}) {
@@ -273,10 +325,10 @@ func TestUpdateWhenDisabledActsLikeEnable(t *testing.T) {
 func TestUpdateInstallsNewBeforeClosingOld(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.update(Options{TunLUID: 7}); err != nil {
+	if _, err := g.update(Options{TunLUID: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"install", "install", "close"}; !slices.Equal(f.log, want) {
@@ -296,11 +348,11 @@ func TestUpdateInstallsNewBeforeClosingOld(t *testing.T) {
 func TestUpdateFailureKeepsOldSession(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	f.fail = errors.New("отказ")
-	if err := g.update(Options{}); !errors.Is(err, f.fail) {
+	if _, err := g.update(Options{}); !errors.Is(err, f.fail) {
 		t.Fatalf("ошибка %v", err)
 	}
 	if want := []string{"install", "install"}; !slices.Equal(f.log, want) {
@@ -312,7 +364,7 @@ func TestUpdateFailureKeepsOldSession(t *testing.T) {
 
 	// После сбоя следующая попытка проходит и заменяет старую сессию.
 	f.fail = nil
-	if err := g.update(Options{}); err != nil {
+	if _, err := g.update(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"install", "install", "install", "close"}; !slices.Equal(f.log, want) {
@@ -330,7 +382,7 @@ func TestDisable(t *testing.T) {
 	if len(f.log) != 0 {
 		t.Fatalf("журнал %v", f.log)
 	}
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatal(err)
 	}
 	g.disable()
@@ -341,7 +393,7 @@ func TestDisable(t *testing.T) {
 	if !slices.Equal(f.closed, []uintptr{1}) {
 		t.Fatalf("закрыты %v, ожидалась сессия 1", f.closed)
 	}
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatalf("после отключения включение снова работает: %v", err)
 	}
 }
@@ -381,7 +433,7 @@ func disableWhileStuck(t *testing.T, f *fakeEngine, g *guard, start func() error
 func TestDisableDoesNotWaitForStuckEnable(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
-	err := disableWhileStuck(t, f, g, func() error { return g.enable(Options{}) })
+	err := disableWhileStuck(t, f, g, func() error { _, err := g.enable(Options{}); return err })
 	if !errors.Is(err, errDisabledDuringInstall) {
 		t.Fatalf("ошибка %v", err)
 	}
@@ -394,10 +446,10 @@ func TestDisableDoesNotWaitForStuckEnable(t *testing.T) {
 func TestDisableDoesNotWaitForStuckUpdate(t *testing.T) {
 	f := &fakeEngine{}
 	g := f.guard()
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatal(err)
 	}
-	err := disableWhileStuck(t, f, g, func() error { return g.update(Options{}) })
+	err := disableWhileStuck(t, f, g, func() error { _, err := g.update(Options{}); return err })
 	if !errors.Is(err, errDisabledDuringInstall) {
 		t.Fatalf("ошибка %v", err)
 	}
@@ -406,7 +458,7 @@ func TestDisableDoesNotWaitForStuckUpdate(t *testing.T) {
 	}
 
 	f.hold = nil
-	if err := g.enable(Options{}); err != nil {
+	if _, err := g.enable(Options{}); err != nil {
 		t.Fatalf("после отменённой установки включение снова работает: %v", err)
 	}
 }
@@ -414,7 +466,7 @@ func TestDisableDoesNotWaitForStuckUpdate(t *testing.T) {
 func TestDisableDuringFailedInstallReturnsInstallError(t *testing.T) {
 	f := &fakeEngine{fail: errors.New("отказ")}
 	g := f.guard()
-	err := disableWhileStuck(t, f, g, func() error { return g.enable(Options{}) })
+	err := disableWhileStuck(t, f, g, func() error { _, err := g.enable(Options{}); return err })
 	if !errors.Is(err, f.fail) || len(f.closed) != 0 {
 		t.Fatalf("ошибка %v, закрыты %v", err, f.closed)
 	}
@@ -450,5 +502,22 @@ func TestUseProcessUserSID(t *testing.T) {
 	}
 	if _, err := getCurrentProcessSecurityDescriptor(); err != nil {
 		t.Fatalf("дескриптор с SID владельца: %v", err)
+	}
+}
+
+func TestGuardReportsSkipped(t *testing.T) {
+	f := &fakeEngine{skipped: []string{`C:\gone.exe`}}
+	g := f.guard()
+	skipped, err := g.enable(Options{})
+	if err != nil || !slices.Equal(skipped, f.skipped) {
+		t.Fatalf("enable: %v, %v", skipped, err)
+	}
+	skipped, err = g.update(Options{})
+	if err != nil || !slices.Equal(skipped, f.skipped) {
+		t.Fatalf("update: %v, %v", skipped, err)
+	}
+	f.fail = errors.New("отказ")
+	if skipped, err = g.update(Options{}); err == nil || skipped != nil {
+		t.Fatalf("при ошибке: %v, %v", skipped, err)
 	}
 }

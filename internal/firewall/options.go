@@ -7,12 +7,18 @@ package firewall
 
 import "net/netip"
 
-// Options описывает, что разрешено при включённой блокировке.
+// Options описывает сессию: что разрешено при kill switch и какие программы ходят только
+// через адаптер туннеля.
 type Options struct {
 	TunLUID  uint64       // 0: адаптера ещё нет, разрешение для него не ставится
 	DNS      []netip.Addr // пусто: DNS не ограничивается
 	AllowLAN bool
 	Bypass   []netip.Prefix
+	// KillSwitch закрывает всё, что не разрешено явно: blockAll, запрет DNS, DHCP и NDP,
+	// разрешение обхода. Без него сессия держит только блок программ.
+	KillSwitch bool
+	// Apps - пути программ, которым закрыто всё, кроме адаптера туннеля, loopback и LAN.
+	Apps []string
 }
 
 // step один шаг установки правил внутри транзакции. install получает сам шаг и берёт вес
@@ -25,14 +31,15 @@ type step struct {
 }
 
 // buildSteps возвращает шаги в порядке установки. Веса как в wireguard-windows, локальная
-// сеть и исключения идут с весом адаптера: ниже запрета DNS, чтобы адрес из них не открывал
-// порт 53.
+// сеть идёт с весом адаптера: ниже запрета DNS, чтобы адрес из неё не открывал порт 53.
+// Блок программ (11) стоит под разрешениями адаптера, loopback и LAN и над обходом (10):
+// адрес из обхода программе закрыт.
 func buildSteps(o Options) []step {
 	steps := []step{{name: "service", weight: 15, install: func(s step, session uintptr, bo *baseObjects) error {
 		return permitService(session, bo, s.weight)
 	}}}
 
-	if len(o.DNS) > 0 {
+	if o.KillSwitch && len(o.DNS) > 0 {
 		steps = append(steps, step{name: "dns", weight: 15, denyWeight: 14, install: func(s step, session uintptr, bo *baseObjects) error {
 			return blockDNS(o.DNS, session, bo, s.weight, s.denyWeight)
 		}})
@@ -48,17 +55,19 @@ func buildSteps(o Options) []step {
 		}})
 	}
 
-	steps = append(steps,
-		step{name: "dhcp", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
-			if err := permitDHCPIPv4(session, bo, s.weight); err != nil {
-				return err
-			}
-			return permitDHCPIPv6(session, bo, s.weight)
-		}},
-		step{name: "ndp", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
-			return permitNdp(session, bo, s.weight)
-		}},
-	)
+	if o.KillSwitch {
+		steps = append(steps,
+			step{name: "dhcp", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+				if err := permitDHCPIPv4(session, bo, s.weight); err != nil {
+					return err
+				}
+				return permitDHCPIPv6(session, bo, s.weight)
+			}},
+			step{name: "ndp", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+				return permitNdp(session, bo, s.weight)
+			}},
+		)
+	}
 
 	if o.AllowLAN {
 		steps = append(steps, step{name: "lan", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
@@ -66,8 +75,18 @@ func buildSteps(o Options) []step {
 		}})
 	}
 
+	if len(o.Apps) > 0 {
+		steps = append(steps, step{name: "apps", weight: 11, install: func(s step, session uintptr, bo *baseObjects) error {
+			return blockApps(session, bo, s.weight, o.Apps)
+		}})
+	}
+
+	if !o.KillSwitch {
+		return steps
+	}
+
 	if len(o.Bypass) > 0 {
-		steps = append(steps, step{name: "bypass", weight: 12, install: func(s step, session uintptr, bo *baseObjects) error {
+		steps = append(steps, step{name: "bypass", weight: 10, install: func(s step, session uintptr, bo *baseObjects) error {
 			return permitSubnets(session, bo, s.weight, o.Bypass)
 		}})
 	}

@@ -4,7 +4,13 @@ package firewall
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -59,7 +65,7 @@ func setup(t *testing.T, targets ...string) {
 func TestEnableBlocksAndDisableRestores(t *testing.T) {
 	setup(t, blockedTarget)
 
-	if err := Enable(Options{AllowLAN: true}); err != nil {
+	if _, err := Enable(Options{AllowLAN: true, KillSwitch: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !Enabled() {
@@ -84,14 +90,15 @@ func TestEnableBlocksAndDisableRestores(t *testing.T) {
 func TestUpdateReplacesPermits(t *testing.T) {
 	setup(t, bypassTarget, bypassDNS)
 
-	if err := Enable(Options{AllowLAN: true}); err != nil {
+	if _, err := Enable(Options{AllowLAN: true, KillSwitch: true}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := Update(Options{
-		AllowLAN: true,
-		DNS:      []netip.Addr{netip.MustParseAddr("203.0.113.53")},
-		Bypass:   []netip.Prefix{netip.MustParsePrefix(bypassSubnet)},
+	_, err := Update(Options{
+		AllowLAN:   true,
+		KillSwitch: true,
+		DNS:        []netip.Addr{netip.MustParseAddr("203.0.113.53")},
+		Bypass:     []netip.Prefix{netip.MustParsePrefix(bypassSubnet)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,10 +110,53 @@ func TestUpdateReplacesPermits(t *testing.T) {
 		t.Fatal("DNS прошёл через запрет на адрес из исключения")
 	}
 
-	if err := Update(Options{AllowLAN: true}); err != nil {
+	if _, err := Update(Options{AllowLAN: true, KillSwitch: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := probe(bypassTarget, 3*time.Second); err == nil {
 		t.Fatal("после второго Update соединение прошло через блокировку")
+	}
+}
+
+// Программа из списка без kill switch: мимо туннеля не выходит, loopback ей открыт, у
+// остальных процессов сеть есть. После снятия сессии программа снова работает.
+func TestAppsBlockedWithoutKillSwitch(t *testing.T) {
+	curl := filepath.Join(os.Getenv("SystemRoot"), "System32", "curl.exe")
+	if _, err := os.Stat(curl); err != nil {
+		t.Skipf("нет %s", curl)
+	}
+	run := func(url string) error {
+		return exec.Command(curl, "-s", "-o", "NUL", "--connect-timeout", "3", url).Run()
+	}
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer local.Close()
+	const remote = "http://1.1.1.1/"
+	missing := `C:\no-such-dir\missing.exe`
+
+	setup(t, blockedTarget)
+	if err := run(remote); err != nil {
+		t.Fatalf("curl не выходит в сеть ещё до блокировки: %v", err)
+	}
+
+	skipped, err := Enable(Options{Apps: []string{curl, missing}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(skipped, []string{missing}) {
+		t.Fatalf("пропущены %v, ожидался %s", skipped, missing)
+	}
+	if err := run(remote); err == nil {
+		t.Fatal("программа из списка вышла в сеть мимо туннеля")
+	}
+	if err := run(local.URL); err != nil {
+		t.Fatalf("loopback программе закрыт: %v", err)
+	}
+	if err := probe(blockedTarget, 3*time.Second); err != nil {
+		t.Fatalf("процесс не из списка потерял сеть: %v", err)
+	}
+
+	Disable()
+	if err := run(remote); err != nil {
+		t.Fatalf("после снятия сессии программа без сети: %v", err)
 	}
 }
