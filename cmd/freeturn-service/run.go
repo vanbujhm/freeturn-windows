@@ -12,6 +12,7 @@ import (
 	"github.com/samosvalishe/free-turn-proxy/mobile"
 
 	"github.com/vanbujhm/freeturn-windows/internal/corehost"
+	"github.com/vanbujhm/freeturn-windows/internal/dnsproxy"
 	"github.com/vanbujhm/freeturn-windows/internal/engine"
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
@@ -77,7 +78,10 @@ func run(ctx context.Context, o runOptions) error {
 	save := func(s statefile.State) error { return statefile.Save(paths.state, s) }
 
 	bypass := make(chan struct{}, 1)
-	eng := newEngine(paths.core, o.debug, logs, &relay, func() { notify(bypass) })
+	// Журнал DNS-запросов живёт, пока работает служба: переживает переподключения, на диск
+	// не пишется.
+	queries := dnsproxy.NewLog()
+	eng := newEngine(paths.core, o.debug, logs, &relay, queries, func() { notify(bypass) })
 	state, err = recoverAfterStart(eng, state, statefile.BootUnix(), netcfg.RemoveRoutes, netcfg.RemoveNRPTKey, save)
 	if err != nil {
 		logs.write(mobile.LevelError, "состояние после перезапуска не восстановлено: "+err.Error())
@@ -91,6 +95,7 @@ func run(ctx context.Context, o runOptions) error {
 		logf:    logs.write,
 		applied: netcfg.AppliedBypass,
 		nrpt:    netcfg.AppliedNRPT,
+		queries: queries,
 		state:   state,
 	}
 	srv, err := ipc.Serve(ipc.PipePath, o.pipeSDDL, cmds)
@@ -159,7 +164,7 @@ func within(fn func(), limit time.Duration) bool {
 // newEngine собирает движок из настоящих пакетов. Один Protector стоит и у ядра, и у движка,
 // и у разрешителя доменов: индекс физического интерфейса у них должен быть общий.
 // bypassChanged вызывается после каждой смены набора маршрутов обхода и не должен ждать.
-func newEngine(coreDir string, debug bool, logs *serviceLog, relay *eventRelay, bypassChanged func()) *engine.Engine {
+func newEngine(coreDir string, debug bool, logs *serviceLog, relay *eventRelay, queries *dnsproxy.Log, bypassChanged func()) *engine.Engine {
 	prot := protect.New()
 	sink := &coreSink{debug: debug, log: logs.write}
 	host := corehost.New(coreDir, sink, prot, debug)
@@ -173,6 +178,9 @@ func newEngine(coreDir string, debug bool, logs *serviceLog, relay *eventRelay, 
 		// Проверка адреса спрашивает имена, трафик которых идёт через туннель, у DNS конфига
 		// через адаптер туннеля.
 		TunnelResolver: sysTunnelResolver{},
+		DNSProxy:       sysDNSProxy{},
+		QueryLog:       queries,
+		TunnelIndexes:  netcfg.InterfaceIndexes,
 		FreePort:       corehost.FreePort,
 		Classify:       corehost.Classify,
 		OnChange: func(st model.Status) {

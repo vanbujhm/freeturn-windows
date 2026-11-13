@@ -31,6 +31,9 @@ type Handler interface {
 	Logs() []string
 	// Probe узнаёт маршрут адреса или домена. Только читает сеть.
 	Probe(value string) ([]model.ProbeHop, error)
+	// Queries отдаёт записи журнала DNS-запросов с номером больше since.
+	Queries(since uint64) model.QueryPage
+	ClearQueries()
 }
 
 // Server принимает клиентов на именованном канале.
@@ -251,6 +254,11 @@ func (c *srvClient) handle(req request) (response, bool) {
 		resp.Status = &st
 	case methodGetLogs:
 		resp.Logs = c.srv.h.Logs()
+	case methodQueries:
+		page := c.srv.h.Queries(req.Since)
+		resp.Queries = &page
+	case methodClearQueries:
+		c.srv.h.ClearQueries()
 	default:
 		resp.Err = "неизвестная команда"
 	}

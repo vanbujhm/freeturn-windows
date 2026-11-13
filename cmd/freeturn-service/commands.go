@@ -10,6 +10,7 @@ import (
 
 	"github.com/samosvalishe/free-turn-proxy/mobile"
 
+	"github.com/vanbujhm/freeturn-windows/internal/dnsproxy"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
 	"github.com/vanbujhm/freeturn-windows/internal/statefile"
@@ -33,6 +34,7 @@ type tunnelControl interface {
 	Disconnect()
 	Status() model.Status
 	Probe(ctx context.Context, value string) ([]model.ProbeHop, error)
+	ProxyActive() bool
 }
 
 // probeTimeout - срок команды Probe: разрешение домена занимает до 3 секунд.
@@ -50,6 +52,8 @@ type commands struct {
 	logf    func(level, msg string)
 	applied func() []netcfg.BypassRoute
 	nrpt    func() string // ключ NRPT, который сейчас стоит
+	// queries - журнал DNS-запросов службы. На диск и в журнал службы не попадает.
+	queries *dnsproxy.Log
 
 	mu      sync.Mutex
 	stopped atomic.Bool
@@ -144,6 +148,22 @@ func (c *commands) write() {
 func (c *commands) Status() model.Status { return c.eng.Status() }
 
 func (c *commands) Logs() []string { return c.logs() }
+
+// Queries и ClearQueries работают с памятью службы, поэтому mu не берут, как Probe.
+func (c *commands) Queries(since uint64) model.QueryPage {
+	var page model.QueryPage
+	if c.queries != nil {
+		page.Entries, page.Last = c.queries.Since(since)
+	}
+	page.Active = c.eng.ProxyActive()
+	return page
+}
+
+func (c *commands) ClearQueries() {
+	if c.queries != nil {
+		c.queries.Clear()
+	}
+}
 
 // Probe только читает сеть, поэтому mu не берёт и не ждёт идущего подключения.
 func (c *commands) Probe(value string) ([]model.ProbeHop, error) {

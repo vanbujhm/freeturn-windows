@@ -178,6 +178,24 @@ func (c *Client) Status() (model.Status, error) {
 	return *m.Status, nil
 }
 
+// Queries читает журнал DNS-запросов службы после номера since.
+func (c *Client) Queries(since uint64) (model.QueryPage, error) {
+	m, err := c.call(request{Method: methodQueries, Since: since})
+	if err != nil {
+		return model.QueryPage{}, err
+	}
+	if m.Queries == nil {
+		return model.QueryPage{}, errors.New("ipc: в ответе нет журнала запросов")
+	}
+	return *m.Queries, nil
+}
+
+// ClearQueries очищает журнал DNS-запросов службы.
+func (c *Client) ClearQueries() error {
+	_, err := c.call(request{Method: methodClearQueries})
+	return err
+}
+
 // ErrNotConnected: служба не может проверить маршрут, туннель не подключён.
 var ErrNotConnected = errors.New("ipc: туннель не подключён")
 

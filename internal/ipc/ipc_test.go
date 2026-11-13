@@ -35,6 +35,22 @@ type stub struct {
 	hops           []model.ProbeHop
 	probeErr       error
 	probeGate      chan struct{} // если задан, Probe ждёт закрытия
+	page           model.QueryPage
+	since          uint64
+	cleared        int
+}
+
+func (s *stub) Queries(since uint64) model.QueryPage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.since = since
+	return s.page
+}
+
+func (s *stub) ClearQueries() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleared++
 }
 
 func (s *stub) Probe(value string) ([]model.ProbeHop, error) {
@@ -727,5 +743,46 @@ func TestProbeDoesNotBlockOtherCommands(t *testing.T) {
 	close(gate)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestQueriesRoundTrip(t *testing.T) {
+	page := model.QueryPage{
+		Entries: []model.QueryEntry{{
+			Seq: 7, Time: time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC), Name: "www.example.com", Type: "A",
+			Addrs: []netip.Addr{netip.MustParseAddr("203.0.113.7")}, Upstream: "direct", Route: "direct",
+			Rule: "example.com", RCode: "NOERROR", Took: 15 * time.Millisecond, Late: true,
+		}},
+		Last:   7,
+		Active: true,
+	}
+	h := &stub{page: page}
+	_, path := startServer(t, h)
+	got, err := dial(t, path, nil).Queries(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	since := h.since
+	h.mu.Unlock()
+	if since != 3 || got.Last != 7 || !got.Active || len(got.Entries) != 1 {
+		t.Fatalf("Queries = %+v, since %d", got, since)
+	}
+	e, w := got.Entries[0], page.Entries[0]
+	if !e.Time.Equal(w.Time) || e.Name != w.Name || !slices.Equal(e.Addrs, w.Addrs) || e.Took != w.Took || !e.Late || e.Rule != w.Rule {
+		t.Fatalf("запись %+v", e)
+	}
+}
+
+func TestClearQueries(t *testing.T) {
+	h := &stub{}
+	_, path := startServer(t, h)
+	if err := dial(t, path, nil).ClearQueries(); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cleared != 1 {
+		t.Fatalf("очищено %d раз", h.cleared)
 	}
 }

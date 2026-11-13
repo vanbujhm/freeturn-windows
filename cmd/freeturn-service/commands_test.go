@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vanbujhm/freeturn-windows/internal/dnsproxy"
 	"github.com/vanbujhm/freeturn-windows/internal/engine"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/netcfg"
@@ -42,6 +43,7 @@ type fakeTunnel struct {
 	entered     chan struct{} // получает сигнал при входе в Disconnect
 
 	probed           string
+	proxy            bool
 	probeDeadline    time.Time
 	probeHasDeadline bool
 }
@@ -67,6 +69,12 @@ func (f *fakeTunnel) Disconnect() {
 }
 
 func (f *fakeTunnel) Status() model.Status { return model.Status{Phase: model.PhaseIdle} }
+
+func (f *fakeTunnel) ProxyActive() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.proxy
+}
 
 func (f *fakeTunnel) Probe(ctx context.Context, value string) ([]model.ProbeHop, error) {
 	f.mu.Lock()
@@ -382,5 +390,23 @@ func TestSyncSavesNRPT(t *testing.T) {
 	c.syncBypass()
 	if got := st.lastSaved(t).NRPT; got != "" {
 		t.Fatalf("снятый ключ остался: %q", got)
+	}
+}
+
+func TestCommandsQueries(t *testing.T) {
+	st := &stateLog{}
+	tun := &fakeTunnel{proxy: true}
+	c := newCommands(tun, st, &logCatcher{})
+	c.queries = dnsproxy.NewLog()
+	c.queries.Add(model.QueryEntry{Name: "a.example.com"})
+	c.queries.Add(model.QueryEntry{Name: "b.example.com"})
+
+	page := c.Queries(1)
+	if len(page.Entries) != 1 || page.Entries[0].Name != "b.example.com" || page.Last != 2 || !page.Active {
+		t.Fatalf("Queries(1) = %+v", page)
+	}
+	c.ClearQueries()
+	if page := c.Queries(0); len(page.Entries) != 0 || page.Last != 2 {
+		t.Fatalf("после очистки %+v", page)
 	}
 }

@@ -38,6 +38,10 @@ const (
 	methodGetStatus  = "GetStatus"
 	methodGetLogs    = "GetLogs"
 	methodProbe      = "Probe"
+	// methodQueries отдаёт журнал DNS-запросов после номера Since, methodClearQueries его
+	// очищает. Обе команды только читают и пишут память службы.
+	methodQueries      = "Queries"
+	methodClearQueries = "ClearQueries"
 )
 
 // notConnected - текст ошибки Probe без подключения, общий с движком.
@@ -77,16 +81,18 @@ type request struct {
 	Method  string                `json:"method"`
 	Connect *model.ConnectRequest `json:"connect,omitempty"`
 	Probe   string                `json:"probe,omitempty"`
+	Since   uint64                `json:"since,omitempty"`
 }
 
 // response - ответ службы на запрос с тем же id.
 type response struct {
-	Type   string           `json:"type"`
-	ID     uint64           `json:"id"`
-	Err    string           `json:"err,omitempty"`
-	Status *model.Status    `json:"status,omitempty"`
-	Logs   []string         `json:"logs,omitempty"`
-	Hops   []model.ProbeHop `json:"hops,omitempty"`
+	Type    string           `json:"type"`
+	ID      uint64           `json:"id"`
+	Err     string           `json:"err,omitempty"`
+	Status  *model.Status    `json:"status,omitempty"`
+	Logs    []string         `json:"logs,omitempty"`
+	Hops    []model.ProbeHop `json:"hops,omitempty"`
+	Queries *model.QueryPage `json:"queries,omitempty"`
 }
 
 // eventMsg - событие в проводе.
@@ -97,11 +103,12 @@ type eventMsg struct {
 
 // serverMsg - всё, что клиент может получить от службы. Поля Connect здесь нет.
 type serverMsg struct {
-	Type   string           `json:"type"`
-	ID     uint64           `json:"id"`
-	Err    string           `json:"err"`
-	Status *model.Status    `json:"status"`
-	Logs   []string         `json:"logs"`
-	Hops   []model.ProbeHop `json:"hops"`
-	Event  Event            `json:"event"`
+	Type    string           `json:"type"`
+	ID      uint64           `json:"id"`
+	Err     string           `json:"err"`
+	Status  *model.Status    `json:"status"`
+	Logs    []string         `json:"logs"`
+	Hops    []model.ProbeHop `json:"hops"`
+	Queries *model.QueryPage `json:"queries"`
+	Event   Event            `json:"event"`
 }

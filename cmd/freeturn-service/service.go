@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 
+	"github.com/vanbujhm/freeturn-windows/internal/dnsproxy"
 	"github.com/vanbujhm/freeturn-windows/internal/engine"
 	"github.com/vanbujhm/freeturn-windows/internal/firewall"
 	"github.com/vanbujhm/freeturn-windows/internal/ipc"
@@ -167,6 +168,17 @@ func (sysTunnelResolver) ResolveTunnel(ctx context.Context, domain string, luid 
 	p := protect.New()
 	p.SetInterface(netcfg.InterfaceIndexes(luid))
 	return split.NewResolver(p.Protect).Resolve(ctx, []string{domain}, model.Physical{DNS: servers})
+}
+
+// sysDNSProxy запускает настоящий DNS-прокси сеанса.
+type sysDNSProxy struct{}
+
+func (sysDNSProxy) Start(c dnsproxy.Config) (engine.RunningProxy, error) {
+	p, err := dnsproxy.Start(c)
+	if err != nil {
+		return nil, err // не (*Proxy)(nil): движок проверяет интерфейс на nil
+	}
+	return p, nil
 }
 
 func (sysNet) ConfigureInterface(luid uint64, addrs []netip.Prefix, mtu int) error {
