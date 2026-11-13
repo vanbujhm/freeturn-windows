@@ -183,6 +183,23 @@ func (sysNet) ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip
 
 func (sysNet) ClearTunnel(luid uint64) error { return netcfg.ClearTunnel(luid) }
 
+func (sysNet) SetTunnelDNS(luid uint64, dns []netip.Addr) error {
+	return netcfg.SetTunnelDNS(luid, dns)
+}
+
+// AddNRPT и RemoveNRPT меняют то, что пишется в файл состояния, поэтому зовут changed.
+func (n sysNet) AddNRPT(server netip.Addr) error {
+	err := netcfg.AddNRPT(server)
+	n.changed()
+	return err
+}
+
+func (n sysNet) RemoveNRPT() error {
+	err := netcfg.RemoveNRPT()
+	n.changed()
+	return err
+}
+
 func (n sysNet) SetBypass(ph model.Physical, p []netip.Prefix) error {
 	err := netcfg.SetBypass(ph, p)
 	n.changed()

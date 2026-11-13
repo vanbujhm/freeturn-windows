@@ -95,6 +95,9 @@ type session struct {
 	// прошлого подключения или от ArmBlock, и с шага 5, если его включил человек.
 	kill bool
 	apps []string // программы только через туннель, без выключенных
+	// proxy - DNS-прокси сеанса, nil: не запущен. tun4 и tun6 - индексы адаптера туннеля.
+	proxy      RunningProxy
+	tun4, tun6 uint32
 
 	listening   bool // события ядра принимаются
 	coreSeen    bool
@@ -163,9 +166,14 @@ func (s *session) bypass() []netip.Prefix {
 // только вместе с kill switch, и тогда уже на шаге 1: блокировка от прошлого подключения
 // закрывала DNS мимо конфига, и блок программ не должен этот запрет снять.
 func (s *session) firewallOptions() firewall.Options {
+	dns := s.cfg.DNS
+	if s.proxy != nil {
+		// Разрешение loopback (13) ниже запрета DNS (14): прокси нужно своё исключение.
+		dns = append(slices.Clone(dns), proxyDNS)
+	}
 	return firewall.Options{
 		TunLUID:    s.luid,
-		DNS:        s.cfg.DNS,
+		DNS:        dns,
 		AllowLAN:   s.req.Options.AllowLAN,
 		Bypass:     s.bypass(),
 		KillSwitch: s.kill,
@@ -704,6 +712,7 @@ func (e *Engine) applyNetwork(s *session) error {
 	if err := e.resolveDomains(s); err != nil {
 		return err
 	}
+	e.startProxy(s)
 
 	e.mu.Lock()
 	s.kill = s.kill || s.req.Options.Blocks()
@@ -727,16 +736,46 @@ func (e *Engine) applyNetwork(s *session) error {
 	}
 
 	s.push(func() { e.logFailure("снятие маршрутов туннеля", e.d.Net.ClearTunnel(s.luid)) })
+	e.mu.Lock()
+	proxied := s.proxy != nil
+	e.mu.Unlock()
 	if s.req.Options.TunnelOnly() {
 		if err := e.routeListed(s); err != nil {
 			return failed(model.ErrAdapter, err)
 		}
-		return s.stopped()
+		if proxied {
+			if err := e.d.Net.SetTunnelDNS(s.luid, []netip.Addr{proxyDNS}); err != nil {
+				e.warn(model.WarnDNSProxy, err.Error())
+				e.logf(levelWarn, "DNS адаптера туннеля не задан: "+err.Error())
+			}
+		}
+	} else {
+		dns := s.cfg.DNS
+		if proxied {
+			dns = []netip.Addr{proxyDNS}
+		}
+		if err := e.d.Net.ApplyTunnelRoutes(s.luid, s.cfg.AllowedPrefixes(), dns); err != nil {
+			return failed(model.ErrAdapter, err)
+		}
 	}
-	if err := e.d.Net.ApplyTunnelRoutes(s.luid, s.cfg.AllowedPrefixes(), s.cfg.DNS); err != nil {
-		return failed(model.ErrAdapter, err)
+	if err := s.stopped(); err != nil {
+		return err
+	}
+	if proxied {
+		e.directSystemDNS(s)
 	}
 	return s.stopped()
+}
+
+// directSystemDNS направляет все имена системы в прокси правилом NRPT: иначе Windows
+// параллельно спрашивала бы и DNS физической сети. Сбой не срывает подключение: остаётся DNS
+// адаптера. Снятие кладётся на стек отката до записи.
+func (e *Engine) directSystemDNS(s *session) {
+	s.push(func() { e.logFailure("снятие правила NRPT", e.d.Net.RemoveNRPT()) })
+	if err := e.d.Net.AddNRPT(proxyDNS); err != nil {
+		e.warn(model.WarnDNSProxy, err.Error())
+		e.logf(levelWarn, "правило NRPT не записано, DNS сети может спрашиваться мимо прокси: "+err.Error())
+	}
 }
 
 // routeListed ведёт список в туннель, когда через туннель идёт только он. В остальных режимах

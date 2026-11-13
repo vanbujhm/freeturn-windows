@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/vanbujhm/freeturn-windows/internal/dnsproxy"
 	"github.com/vanbujhm/freeturn-windows/internal/firewall"
 	"github.com/vanbujhm/freeturn-windows/internal/model"
 	"github.com/vanbujhm/freeturn-windows/internal/tunnel"
@@ -50,6 +51,22 @@ type Network interface {
 	// BestRoute возвращает LUID интерфейса, через который Windows отправит пакет на dst, и
 	// признак маршрута подключённой подсети (без шлюза).
 	BestRoute(dst netip.Addr) (luid uint64, onLink bool, err error)
+	// SetTunnelDNS задаёт DNS адаптеру туннеля без маршрутов: режим «только список» с прокси.
+	SetTunnelDNS(luid uint64, dns []netip.Addr) error
+	// AddNRPT направляет все имена системы на server правилом NRPT, RemoveNRPT его снимает.
+	AddNRPT(server netip.Addr) error
+	RemoveNRPT() error
+}
+
+// DNSProxy запускает DNS-прокси сеанса.
+type DNSProxy interface {
+	Start(dnsproxy.Config) (RunningProxy, error)
+}
+
+// RunningProxy - работающий прокси. Реализует *dnsproxy.Proxy.
+type RunningProxy interface {
+	SetUpstreams(dnsproxy.Upstreams)
+	Close()
 }
 
 // Firewall ставит и снимает сессию брандмауэра: kill switch и блок программ. Движок не
@@ -93,6 +110,13 @@ type Deps struct {
 	// TunnelResolver нужен проверке адреса. Без него имена, трафик которых идёт через туннель,
 	// не разрешаются вовсе, а не уходят в физическую сеть.
 	TunnelResolver TunnelResolver
+	// DNSProxy запускает прокси сеанса. Без него подключение идёт по прежней схеме: доменные
+	// правила только для заранее разрешённых имён, журнала запросов нет.
+	DNSProxy DNSProxy
+	// QueryLog - журнал запросов службы, переживает переподключения.
+	QueryLog *dnsproxy.Log
+	// TunnelIndexes даёт индексы IPv4 и IPv6 адаптера туннеля для привязки сокетов прокси.
+	TunnelIndexes func(luid uint64) (index4, index6 uint32)
 
 	FreePort func() (netip.AddrPort, error)
 	// Classify переводит текст ошибки ядра в код. Служба передаёт corehost.Classify.

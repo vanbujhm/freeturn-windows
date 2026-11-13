@@ -41,6 +41,8 @@ const (
 	WarnStaleHandshake   WarningCode = "stale_handshake"
 	WarnNoDNS            WarningCode = "no_dns"
 	WarnAppSkipped       WarningCode = "app_skipped"
+	WarnDNSProxy         WarningCode = "dns_proxy"
+	WarnDNSLimit         WarningCode = "dns_limit"
 )
 
 // Warning — предупреждение с необязательным значением (правило, домен).

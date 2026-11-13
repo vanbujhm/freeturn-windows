@@ -96,10 +96,14 @@ func (e *Engine) moveTo(s *session, ph model.Physical) {
 	s.netLost = false
 	s.ph = ph
 	opts := s.firewallOptions()
+	proxy, ups := s.proxy, s.upstreams()
 	e.mu.Unlock()
+	if proxy != nil {
+		proxy.SetUpstreams(ups)
+	}
 	if same && !returned {
 		if dirty {
-			e.applyAddresses(s, ph, opts)
+			_ = e.applyAddresses(s, ph, opts)
 		}
 		return
 	}
@@ -260,17 +264,17 @@ func (e *Engine) refreshDomains(s *session, now time.Time) {
 	ph = s.ph
 	e.mu.Unlock()
 	if added {
-		e.applyAddresses(s, ph, opts)
+		_ = e.applyAddresses(s, ph, opts)
 	}
 }
 
 // applyAddresses сначала разрешает адреса в блокировке, потом ставит маршруты, как шаг 5:
 // маршрут без разрешения увёл бы адрес из работающего туннеля в блокировку. SetBypass и
 // routeListed ставят только недостающее, так что повтор после частичного сбоя безопасен.
-func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Options) {
+func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Options) error {
 	err := e.fwRefresh(opts)
-	if s.stopped() != nil {
-		return
+	if stop := s.stopped(); stop != nil {
+		return stop
 	}
 	if err == nil {
 		err = e.d.Net.SetBypass(ph, opts.Bypass)
@@ -279,6 +283,7 @@ func (e *Engine) applyAddresses(s *session, ph model.Physical, opts firewall.Opt
 		err = e.routeListed(s)
 	}
 	e.noteBypass(s, err)
+	return err
 }
 
 // RefreshRates - таймер службы, каждую секунду. Rates читается без блокировок, поэтому сессия

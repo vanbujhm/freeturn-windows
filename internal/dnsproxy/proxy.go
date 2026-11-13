@@ -66,15 +66,8 @@ func Start(cfg Config) (*Proxy, error) {
 }
 
 func start(cfg Config, o options) (*Proxy, error) {
-	lc := net.ListenConfig{Control: exclusive}
-	udp, err := lc.ListenPacket(context.Background(), "udp4", cfg.Listen.String())
+	udp, tcp, err := listen(cfg.Listen)
 	if err != nil {
-		return nil, err
-	}
-	port := udp.LocalAddr().(*net.UDPAddr).Port
-	tcp, err := lc.Listen(context.Background(), "tcp4", netip.AddrPortFrom(cfg.Listen.Addr(), uint16(port)).String())
-	if err != nil {
-		udp.Close()
 		return nil, err
 	}
 	if cfg.Logf == nil {
@@ -86,6 +79,32 @@ func start(cfg Config, o options) (*Proxy, error) {
 	go p.serveUDP()
 	go p.serveTCP()
 	return p, nil
+}
+
+// listen открывает UDP и TCP на одном порту. Порт 0 (тесты) выбирает система для UDP, и тот же
+// номер для TCP может оказаться занят или зарезервирован: тогда берётся другой.
+func listen(addr netip.AddrPort) (net.PacketConn, net.Listener, error) {
+	lc := net.ListenConfig{Control: exclusive}
+	attempts := 1
+	if addr.Port() == 0 {
+		attempts = 10
+	}
+	var err error
+	for range attempts {
+		var udp net.PacketConn
+		udp, err = lc.ListenPacket(context.Background(), "udp4", addr.String())
+		if err != nil {
+			return nil, nil, err
+		}
+		port := uint16(udp.LocalAddr().(*net.UDPAddr).Port)
+		var tcp net.Listener
+		tcp, err = lc.Listen(context.Background(), "tcp4", netip.AddrPortFrom(addr.Addr(), port).String())
+		if err == nil {
+			return udp, tcp, nil
+		}
+		udp.Close()
+	}
+	return nil, nil, err
 }
 
 // exclusive не даёт другой программе занять тот же адрес поверх прокси.

@@ -192,6 +192,7 @@ type fakeNet struct {
 	allowed  []netip.Prefix
 	dns      []netip.Addr
 	listed   []netip.Prefix        // последний вызов AddTunnelRoutes
+	tunDNS   []netip.Addr          // последний вызов SetTunnelDNS
 	routes   map[netip.Addr]uint64 // ответы BestRoute
 	routeErr map[netip.Addr]error
 	onLink   map[netip.Addr]bool
@@ -276,6 +277,17 @@ func (f *fakeNet) tunnelListed() []netip.Prefix {
 }
 
 func (f *fakeNet) ClearTunnel(uint64) error { return f.log.hit("net.clear") }
+
+func (f *fakeNet) SetTunnelDNS(_ uint64, dns []netip.Addr) error {
+	f.mu.Lock()
+	f.tunDNS = slices.Clone(dns)
+	f.mu.Unlock()
+	return f.log.hit("net.tunDNS")
+}
+
+func (f *fakeNet) AddNRPT(netip.Addr) error { return f.log.hit("net.nrpt") }
+
+func (f *fakeNet) RemoveNRPT() error { return f.log.hit("net.nrptClear") }
 
 func (f *fakeNet) SetBypass(ph model.Physical, p []netip.Prefix) error {
 	f.mu.Lock()
