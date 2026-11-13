@@ -27,16 +27,17 @@ func New(stateDir string, sink Sink, protector mobile.Protector, debug bool) *Ho
 }
 
 // Start запускает ядро для профиля: UDP-релей слушает listen, WireGuard подключается к нему.
-func (h *Host) Start(p model.Profile, listen netip.AddrPort) error {
-	cfg, err := h.config(p, listen)
+// advancedCaptcha - общая настройка продвинутого решения капчи.
+func (h *Host) Start(p model.Profile, listen netip.AddrPort, advancedCaptcha bool) error {
+	cfg, err := h.config(p, listen, advancedCaptcha)
 	if err != nil {
 		return err
 	}
 	return mobile.Start(cfg)
 }
 
-func (h *Host) config(p model.Profile, listen netip.AddrPort) (string, error) {
-	return BuildConfigJSON(p, listen, h.debug)
+func (h *Host) config(p model.Profile, listen netip.AddrPort, advancedCaptcha bool) (string, error) {
+	return BuildConfigJSON(p, listen, h.debug, advancedCaptcha)
 }
 
 // Stop останавливает ядро и ждёт освобождения ресурсов.

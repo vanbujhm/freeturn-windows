@@ -14,7 +14,7 @@ import (
 
 // Core управляет ядром. Start возвращается сразу, состояние приходит в OnCoreState.
 type Core interface {
-	Start(p model.Profile, listen netip.AddrPort) error
+	Start(p model.Profile, listen netip.AddrPort, advancedCaptcha bool) error
 	Stop()
 	Reconnect()
 	Wake()

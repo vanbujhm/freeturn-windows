@@ -16,8 +16,9 @@ import (
 // Так новые поля ядра не ломают сборку, а строгий разбор ядра ловит опечатки в именах.
 // Встроенный туннель ядра не используется: WireGuard поднимает пакет tunnel,
 // поэтому секция tunnel остаётся по умолчанию, routes выключен, режим прокси udp.
-// debug включает подробный журнал ядра.
-func BuildConfigJSON(p model.Profile, listen netip.AddrPort, debug bool) (string, error) {
+// debug включает подробный журнал ядра. advancedCaptcha включает продвинутое решение капчи,
+// кроме профилей с ручным вводом: там капчу решает человек, как в Android-клиенте.
+func BuildConfigJSON(p model.Profile, listen netip.AddrPort, debug, advancedCaptcha bool) (string, error) {
 	if !listen.IsValid() {
 		return "", fmt.Errorf("corehost: неверный адрес прослушивания %v", listen)
 	}
@@ -49,6 +50,7 @@ func BuildConfigJSON(p model.Profile, listen netip.AddrPort, debug bool) (string
 		vk["streamsPerCred"] = p.StreamsPerCred
 	}
 	vk["manualCaptcha"] = p.ManualCaptcha
+	vk["advancedCaptcha"] = advancedCaptcha && !p.ManualCaptcha
 
 	obf := section(cfg, "obf")
 	if p.ObfProfile != "" {

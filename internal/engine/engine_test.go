@@ -1426,3 +1426,20 @@ func subnetOnlyRequest() model.ConnectRequest {
 	req.Options.Rules = []model.Rule{{Kind: model.RuleSubnet, Value: "203.0.113.0/24"}}
 	return req
 }
+
+func TestConnectPassesAdvancedCaptcha(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		h := newHarness(t)
+		req := testRequest()
+		req.Options.AdvancedCaptcha = on
+		h.connect(req)
+		h.waitPhase(model.PhaseConnected)
+		h.core.mu.Lock()
+		got := h.core.advanced
+		h.core.mu.Unlock()
+		if got != on {
+			t.Errorf("AdvancedCaptcha=%v: ядро получило %v", on, got)
+		}
+		h.e.Disconnect()
+	}
+}

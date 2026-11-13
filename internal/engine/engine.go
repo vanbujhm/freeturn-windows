@@ -622,7 +622,7 @@ func (e *Engine) startCore(s *session) error {
 	s.listening = true
 	e.mu.Unlock()
 
-	if err := e.d.Core.Start(s.req.Profile, listen); err != nil {
+	if err := e.d.Core.Start(s.req.Profile, listen, s.req.Options.AdvancedCaptcha); err != nil {
 		return failed(e.d.Classify(err.Error()), err)
 	}
 	s.push(e.d.Core.Stop)

@@ -40,7 +40,7 @@ func testProfile() model.Profile {
 
 func buildMap(t *testing.T, p model.Profile) map[string]any {
 	t.Helper()
-	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false)
+	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false, false)
 	if err != nil {
 		t.Fatalf("BuildConfigJSON: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestBuildConfigJSONValid(t *testing.T) {
 		if provider == "direct" {
 			p.CallLink = ""
 		}
-		raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false)
+		raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false, false)
 		if err != nil {
 			t.Fatalf("%s: BuildConfigJSON: %v", provider, err)
 		}
@@ -170,7 +170,7 @@ func TestBuildConfigKeepsDefaults(t *testing.T) {
 func TestBuildConfigRejectsMissingPeerKeepsError(t *testing.T) {
 	p := testProfile()
 	p.Peer = ""
-	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false)
+	raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestBuildConfigRejectsMissingPeerKeepsError(t *testing.T) {
 func TestHostDebugReachesConfig(t *testing.T) {
 	for _, debug := range []bool{false, true} {
 		h := &Host{debug: debug}
-		raw, err := h.config(testProfile(), netip.MustParseAddrPort(testListen))
+		raw, err := h.config(testProfile(), netip.MustParseAddrPort(testListen), false)
 		if err != nil {
 			t.Fatalf("config: %v", err)
 		}
@@ -196,6 +196,38 @@ func TestHostDebugReachesConfig(t *testing.T) {
 		}
 		if got := sec(t, m, "log")["debug"]; got != debug {
 			t.Errorf("debug=%v: log.debug = %v", debug, got)
+		}
+	}
+}
+
+// Продвинутая капча - общая настройка. Ручной ввод капчи в профиле её выключает, как в
+// Android-клиенте: ядро тогда показывает капчу человеку.
+func TestBuildConfigAdvancedCaptcha(t *testing.T) {
+	cases := []struct {
+		name             string
+		advanced, manual bool
+		want             bool
+	}{
+		{"выключена", false, false, false},
+		{"включена", true, false, true},
+		{"ручной ввод выключает", true, true, false},
+	}
+	for _, c := range cases {
+		p := testProfile()
+		p.ManualCaptcha = c.manual
+		raw, err := BuildConfigJSON(p, netip.MustParseAddrPort(testListen), false, c.advanced)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if msg := mobile.ValidateConfig(raw); msg != "" {
+			t.Fatalf("%s: ядро отвергло конфиг: %s", c.name, msg)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		if got := sec(t, m, "vk")["advancedCaptcha"]; got != c.want {
+			t.Errorf("%s: vk.advancedCaptcha = %v", c.name, got)
 		}
 	}
 }

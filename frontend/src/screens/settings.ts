@@ -1,4 +1,4 @@
-// Настройки: четыре переключателя. Каждое нажатие сразу сохраняется.
+// Настройки: переключатели. Каждое нажатие сразу сохраняется.
 import { API, fail, loadSettings } from "../api";
 import { h } from "../dom";
 import { type SettingsFlag, splitView, withFlag } from "../state";
@@ -16,6 +16,7 @@ interface Toggle {
 const TOGGLES: Toggle[] = [
   { flag: "KillSwitch", title: S.settings.killSwitch, hint: S.settings.killSwitchHint },
   { flag: "AllowLAN", title: S.settings.allowLAN, hint: S.settings.allowLANHint },
+  { flag: "AdvancedCaptcha", title: S.settings.advancedCaptcha, hint: S.settings.advancedCaptchaHint },
   { flag: "Autostart", title: S.settings.autostart, hint: S.settings.autostartHint },
   { flag: "ConnectOnLaunch", title: S.settings.connectOnLaunch, hint: S.settings.connectOnLaunchHint },
 ];
@@ -90,6 +91,7 @@ export function createSettings(): Screen {
     if (s) {
       inputs.get("KillSwitch")!.checked = s.Options.KillSwitch;
       inputs.get("AllowLAN")!.checked = s.Options.AllowLAN;
+      inputs.get("AdvancedCaptcha")!.checked = !!s.Options.AdvancedCaptcha;
       inputs.get("Autostart")!.checked = s.Autostart;
       inputs.get("ConnectOnLaunch")!.checked = s.ConnectOnLaunch;
     }

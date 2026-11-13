@@ -85,11 +85,15 @@ type fakeCore struct {
 	silent  bool   // ядро молчит: connected не приходит сам
 	onStart func() // вызывается до возврата Start, как событие, обогнавшее его
 
-	mu    sync.Mutex
-	rates [4]int64 // txTotal, rxTotal, txRate, rxRate
+	mu       sync.Mutex
+	rates    [4]int64 // txTotal, rxTotal, txRate, rxRate
+	advanced bool     // последний Start получил продвинутую капчу
 }
 
-func (f *fakeCore) Start(model.Profile, netip.AddrPort) error {
+func (f *fakeCore) Start(_ model.Profile, _ netip.AddrPort, advanced bool) error {
+	f.mu.Lock()
+	f.advanced = advanced
+	f.mu.Unlock()
 	if err := f.log.hit("core.start"); err != nil {
 		return err
 	}

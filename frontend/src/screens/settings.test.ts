@@ -19,6 +19,7 @@ vi.mock("../api", () => ({
 }));
 
 import { notify, state } from "../store";
+import * as S from "../strings";
 import { createSettings } from "./settings";
 
 const initial = () =>
@@ -90,5 +91,27 @@ describe("экран настроек", () => {
     await vi.waitFor(() => expect(box(el, "AllowLAN").disabled).toBe(true));
     release();
     await vi.waitFor(() => expect(box(el, "AllowLAN").disabled).toBe(false));
+  });
+});
+
+describe("продвинутая капча", () => {
+  test("переключатель сохраняет Options.AdvancedCaptcha и не трогает остальное", async () => {
+    const el = mount();
+    const input = el.querySelector<HTMLInputElement>("#set-AdvancedCaptcha")!;
+    expect(input.checked).toBe(false);
+    input.click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+    const opts = (saved.at(-1) as { Options: { AdvancedCaptcha: boolean; KillSwitch: boolean; Rules: unknown[] } }).Options;
+    expect(opts.AdvancedCaptcha).toBe(true);
+    expect(opts.KillSwitch).toBe(false);
+    expect(opts.Rules).toHaveLength(1);
+    await vi.waitFor(() => expect(el.querySelector<HTMLInputElement>("#set-AdvancedCaptcha")!.checked).toBe(true));
+  });
+
+  test("подсказка говорит про ручной ввод капчи", () => {
+    const el = mount();
+    const row = el.querySelector("label[for=set-AdvancedCaptcha]")!;
+    expect(row.textContent).toContain(S.settings.advancedCaptcha);
+    expect(row.textContent).toContain(S.settings.advancedCaptchaHint);
   });
 });
