@@ -209,6 +209,22 @@ func (s *supervisor) Probe(value string) ([]model.ProbeHop, error) {
 	return c.Probe(value)
 }
 
+func (s *supervisor) Queries(since uint64) (model.QueryPage, error) {
+	c, err := s.conn()
+	if err != nil {
+		return model.QueryPage{}, err
+	}
+	return c.Queries(since)
+}
+
+func (s *supervisor) ClearQueries() error {
+	c, err := s.conn()
+	if err != nil {
+		return err
+	}
+	return c.ClearQueries()
+}
+
 func (s *supervisor) Logs() ([]string, error) {
 	c, err := s.conn()
 	if err != nil {

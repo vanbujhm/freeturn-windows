@@ -76,6 +76,8 @@ type Service interface {
 	Status() (model.Status, error)
 	Logs() ([]string, error)
 	Probe(value string) ([]model.ProbeHop, error)
+	Queries(since uint64) (model.QueryPage, error)
+	ClearQueries() error
 }
 
 // ProfileView - профиль для интерфейса. Секретов (ключ обфускации, ссылка на звонок,
@@ -769,6 +771,24 @@ func (a *API) SaveDiagnostics() (string, error) {
 		return "", newError(codeStorage, "не удалось записать файл диагностики", err)
 	}
 	return path, nil
+}
+
+// Queries отдаёт записи журнала DNS-запросов службы с номером больше since. Журнал живёт
+// только в памяти службы и в диагностику не попадает.
+func (a *API) Queries(since uint64) (model.QueryPage, error) {
+	page, err := a.svc.Queries(since)
+	if err != nil {
+		return model.QueryPage{}, serviceError(err)
+	}
+	return page, nil
+}
+
+// ClearQueries очищает журнал DNS-запросов службы.
+func (a *API) ClearQueries() error {
+	if err := a.svc.ClearQueries(); err != nil {
+		return serviceError(err)
+	}
+	return nil
 }
 
 // OpenCaptchaInBrowser открывает страницу капчи в браузере по умолчанию. Адрес приходит

@@ -45,6 +45,24 @@ type fakeService struct {
 	hops        []model.ProbeHop
 	probeErr    error
 	probed      []string
+	page        model.QueryPage
+	queriesErr  error
+	since       []uint64
+	cleared     int
+}
+
+func (f *fakeService) Queries(since uint64) (model.QueryPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.since = append(f.since, since)
+	return f.page, f.queriesErr
+}
+
+func (f *fakeService) ClearQueries() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleared++
+	return f.queriesErr
 }
 
 func (f *fakeService) Probe(value string) ([]model.ProbeHop, error) {
@@ -1226,5 +1244,60 @@ func TestPickApp(t *testing.T) {
 	_, err = e.api.PickApp()
 	if code := apiCode(t, err); code != codeSettings {
 		t.Fatalf("сбой диалога: код %q", code)
+	}
+}
+
+func TestQueriesPassesSince(t *testing.T) {
+	e := newEnv(t)
+	e.svc.page = model.QueryPage{Entries: []model.QueryEntry{{Seq: 6, Name: "www.example.com"}}, Last: 6, Active: true}
+	got, err := e.api.Queries(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 1 || got.Last != 6 || !got.Active || !slices.Equal(e.svc.since, []uint64{5}) {
+		t.Fatalf("Queries = %+v, служба получила %v", got, e.svc.since)
+	}
+}
+
+func TestQueriesServiceDown(t *testing.T) {
+	e := newEnv(t)
+	e.svc.queriesErr = errNoService
+	_, err := e.api.Queries(0)
+	if code := apiCode(t, err); code != codeServiceDown {
+		t.Fatalf("код %q", code)
+	}
+	if code := apiCode(t, e.api.ClearQueries()); code != codeServiceDown {
+		t.Fatalf("ClearQueries: код %q", code)
+	}
+}
+
+func TestClearQueries(t *testing.T) {
+	e := newEnv(t)
+	if err := e.api.ClearQueries(); err != nil {
+		t.Fatal(err)
+	}
+	if e.svc.cleared != 1 {
+		t.Fatalf("очищено %d раз", e.svc.cleared)
+	}
+}
+
+// Журнал запросов не попадает в файл диагностики: в нём имена сайтов.
+func TestDiagnosticsWithoutQueries(t *testing.T) {
+	e := newEnv(t)
+	e.svc.logs = []string{"служба работает"}
+	e.svc.page = model.QueryPage{Entries: []model.QueryEntry{{Seq: 1, Name: "secret-name.example"}}, Last: 1}
+	path, err := e.api.SaveDiagnostics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-name") {
+		t.Fatalf("в диагностике имя из журнала запросов: %q", data)
+	}
+	if len(e.svc.since) != 0 {
+		t.Fatal("диагностика спросила журнал запросов")
 	}
 }

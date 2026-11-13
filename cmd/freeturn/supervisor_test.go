@@ -298,3 +298,34 @@ func TestSupervisorStopClosesConn(t *testing.T) {
 	}
 	s.Stop() // повторный вызов безопасен
 }
+
+func TestSupervisorQueries(t *testing.T) {
+	fastRetry(t)
+	sc := &script{}
+	r := newRecorder()
+	s := newSupervisor(sc.dial, r.onEvent, r.onDown, r.onUp)
+	if _, err := s.Queries(0); !errors.Is(err, errNoService) {
+		t.Fatalf("Queries без канала: %v", err)
+	}
+	if err := s.ClearQueries(); !errors.Is(err, errNoService) {
+		t.Fatalf("ClearQueries без канала: %v", err)
+	}
+	c := newFakeConn(model.Status{})
+	c.page = model.QueryPage{Last: 4, Active: true}
+	sc.add(c)
+	s.Start()
+	defer s.Stop()
+	r.waitLog(t, 1)
+	got, err := s.Queries(2)
+	if err != nil || got.Last != 4 || !got.Active {
+		t.Fatalf("Queries = %+v, %v", got, err)
+	}
+	if err := s.ClearQueries(); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !slices.Equal(c.since, []uint64{2}) || c.cleared != 1 {
+		t.Fatalf("служба получила since %v, очисток %d", c.since, c.cleared)
+	}
+}
