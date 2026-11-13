@@ -38,7 +38,7 @@ func NewResolver(protect func(fd int) bool) *DNSResolver {
 	return &DNSResolver{protect: protect, port: dnsPort, timeout: resolveTimeout}
 }
 
-// Resolve возвращает адреса A и AAAA, кроме тех, что не годятся для маршрута, см. unroutable.
+// Resolve возвращает адреса A и AAAA, кроме тех, что не годятся для маршрута, см. Unroutable.
 // Домен, который не разрешился, просто не попадает в результат. Без DNS-серверов у интерфейса
 // разрешать нечем.
 func (r *DNSResolver) Resolve(ctx context.Context, domains []string, ph model.Physical) []netip.Addr {
@@ -103,12 +103,12 @@ func routable(addrs []netip.Addr) []netip.Addr {
 	for i, a := range addrs {
 		addrs[i] = a.Unmap()
 	}
-	return slices.DeleteFunc(addrs, unroutable)
+	return slices.DeleteFunc(addrs, Unroutable)
 }
 
-// unroutable: маршрут обхода через шлюз на такой адрес никуда не ведёт. DNS с блокировкой
+// Unroutable: маршрут обхода через шлюз на такой адрес никуда не ведёт. DNS с блокировкой
 // рекламы отвечает 0.0.0.0, а Mihomo подставными адресами.
-func unroutable(a netip.Addr) bool {
+func Unroutable(a netip.Addr) bool {
 	return fakeIPRange.Contains(a) || a.IsUnspecified() || a.IsLoopback() ||
 		a.IsMulticast() || a.IsLinkLocalUnicast()
 }
