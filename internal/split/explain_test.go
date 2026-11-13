@@ -46,7 +46,8 @@ func TestExplain(t *testing.T) {
 		{"ipv6", model.Options{Rules: rulesOf("2001:db8::/32")}, "2001:db8::1", nil, VerdictDirect, "2001:db8::/32", "2001:db8::1", "", false},
 		{"домен по имени", model.Options{Rules: rulesOf("example.com")}, " Example.COM. ", nil, VerdictDirect, "example.com", "", "", false},
 		{"юникод-домен", model.Options{Rules: rulesOf("почта.рф")}, "Почта.РФ.", nil, VerdictDirect, "xn--80a1acny.xn--p1ai", "", "", false},
-		{"поддомен не совпадает", model.Options{Rules: rulesOf("example.com")}, "www.example.com", nil, VerdictTunnel, "", "", "", false},
+		{"поддомен совпадает с правилом домена", model.Options{Rules: rulesOf("example.com")}, "www.example.com", nil, VerdictDirect, "example.com", "", "", false},
+		{"похожий суффикс не совпадает", model.Options{Rules: rulesOf("example.com")}, "badexample.com", nil, VerdictTunnel, "", "", "", false},
 		{"адрес домена в подсети", model.Options{Rules: rulesOf("93.184.0.0/16")}, "example.org", addrs("93.184.216.34"), VerdictDirect, "93.184.0.0/16", "93.184.216.34", "", false},
 		{"выключенное правило", model.Options{Rules: []model.Rule{{Value: "1.2.3.4", Off: true}}}, "1.2.3.4", nil, VerdictTunnel, "", "", "1.2.3.4", false},
 		{"действующее важнее выключенного", model.Options{Rules: []model.Rule{{Value: "10.0.0.0/8"}, {Value: "10.1.2.3", Off: true}}}, "10.1.2.3", nil, VerdictDirect, "10.0.0.0/8", "10.1.2.3", "", false},
@@ -79,5 +80,24 @@ func TestExplainErrors(t *testing.T) {
 		if _, err := Explain(model.Options{}, in, nil); !errors.Is(err, want) {
 			t.Errorf("Explain(%q) err = %v, want %v", in, err, want)
 		}
+	}
+}
+
+func TestExplainSubdomain(t *testing.T) {
+	o := model.Options{Rules: rulesOf("example.com")}
+	ex, err := Explain(o, "www.example.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Match.Rule.Value != "example.com" || ex.Verdict != VerdictDirect {
+		t.Fatalf("поддомен: %+v", ex)
+	}
+	o.Rules[0].Off = true
+	ex, err = Explain(o, "www.example.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.OffMatch.Rule.Value != "example.com" || ex.Match.Rule.Value != "" {
+		t.Fatalf("выключенное правило для поддомена: %+v", ex)
 	}
 }

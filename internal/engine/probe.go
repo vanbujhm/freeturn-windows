@@ -89,10 +89,12 @@ func covered(ps []netip.Prefix, a netip.Addr) bool {
 }
 
 // viaTunnel сообщает, что трафик имени идёт через туннель: раздельное туннелирование
-// выключено, или имя не в списке обхода, или в режиме «только список» оно в списке.
+// выключено, или имя не под правилом обхода, или в режиме «только список» оно под правилом.
+// Правило действует и для поддоменов.
 func viaTunnel(o model.Options, rules split.Compiled, name string) bool {
 	if o.SplitOff {
 		return true
 	}
-	return slices.Contains(rules.Domains, name) == o.TunnelOnly()
+	_, listed := split.MatchDomain(rules.Domains, name)
+	return listed == o.TunnelOnly()
 }

@@ -199,3 +199,7 @@ func TestProbeNoTunnelResolverDoesNotLeak(t *testing.T) {
 		t.Fatalf("Probe = %+v, %v; физический DNS спрошен %d раз", got, err, h.log.count("resolve")-before)
 	}
 }
+
+func TestProbeSubdomainResolvedOnRuleSide(t *testing.T) {
+	probeSide(t, model.Options{Rules: []model.Rule{{Value: "example.com"}}}, "198.51.100.53", "www.example.com", false)
+}

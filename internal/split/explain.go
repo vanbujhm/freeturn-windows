@@ -35,7 +35,8 @@ type Explanation struct {
 }
 
 // Explain сопоставляет адрес или домен с правилами. addrs - адреса домена, если они
-// известны: они сверяются с правилами IP и подсетей. Домен сопоставляется по точному имени.
+// известны: они сверяются с правилами IP и подсетей. Доменное правило действует и для
+// поддоменов, см. MatchDomain.
 func Explain(o model.Options, input string, addrs []netip.Addr) (Explanation, error) {
 	in, err := Classify(input)
 	if err != nil {
@@ -79,13 +80,21 @@ func Explain(o model.Options, input string, addrs []netip.Addr) (Explanation, er
 	return ex, nil
 }
 
-// find ищет сначала доменное правило с тем же именем, потом самый длинный префикс правил IP
+// find ищет сначала доменное правило для имени (MatchDomain), потом самый длинный префикс правил IP
 // и подсетей, содержащий один из адресов.
 func find(rules []model.Rule, in model.Rule, addrs []netip.Addr) Match {
 	if in.Kind == model.RuleDomain {
+		var domains []string
 		for _, r := range rules {
-			if r.Kind == model.RuleDomain && r.Value == in.Value {
-				return Match{Rule: r}
+			if r.Kind == model.RuleDomain {
+				domains = append(domains, r.Value)
+			}
+		}
+		if d, ok := MatchDomain(domains, in.Value); ok {
+			for _, r := range rules {
+				if r.Kind == model.RuleDomain && r.Value == d {
+					return Match{Rule: r}
+				}
 			}
 		}
 	}
