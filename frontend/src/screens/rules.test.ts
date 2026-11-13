@@ -318,3 +318,31 @@ describe("раздел программ на экране маршрутизац
     await vi.waitFor(() => expect(el.querySelectorAll(".app")).toHaveLength(1));
   });
 });
+
+describe("часть В на экране правил", () => {
+  test("prefill ставит имя в поле ввода", () => {
+    const { el, prefill } = createRules();
+    document.body.replaceChildren(el);
+    prefill("www.example.com");
+    expect(q<HTMLInputElement>(el, "#rules-value").value).toBe("www.example.com");
+  });
+
+  test("предупреждение о DoH при доменном правиле", () => {
+    const el = mount();
+    const warn = q<HTMLElement>(el, ".rules-doh");
+    expect(warn.textContent).toBe(S.rules.dohWarn);
+    expect(warn.hidden).toBe(false);
+
+    withRules([{ Kind: "ip", Value: "1.2.3.4" }]);
+    notify("settings");
+    expect(warn.hidden).toBe(true);
+
+    withRules([{ Kind: "domain", Value: "example.com", Off: true }]);
+    notify("settings");
+    expect(warn.hidden).toBe(true);
+  });
+
+  test("подсказка говорит про поддомены", () => {
+    expect(S.rules.hint[0]).toContain("поддомен");
+  });
+});

@@ -10,7 +10,7 @@ import { type SplitMode, splitView, withSplit } from "../state";
 import { type Screen, state, subscribe } from "../store";
 import * as S from "../strings";
 
-export function createRules(): Screen {
+export function createRules(): Screen & { prefill(value: string): void } {
   let busy = false;
 
   const splitInput = h("input", { type: "checkbox", class: "switch-input", id: "rules-split" });
@@ -75,6 +75,7 @@ export function createRules(): Screen {
   let pending: { rule: Rule; patch: Partial<Rule> } | null = null;
   const notice = h("p", { class: "muted small-text", text: S.rules.appliesNext, hidden: true });
   const allOff = h("p", { class: "small-text warn-text rules-all-off", text: S.rules.allOffOnly, hidden: true });
+  const doh = h("p", { class: "small-text warn-text rules-doh", text: S.rules.dohWarn, hidden: true });
   const list = h("div", { class: "stack" });
   const apps = createApps({ busy: () => busy, exclusive, save: (next) => save(next) });
 
@@ -89,6 +90,7 @@ export function createRules(): Screen {
     notice,
     allOff,
     list,
+    doh,
     apps.el,
     h("div", { class: "callout stack" }, ...S.rules.hint.map((t) => h("p", { class: "small-text", text: t }))),
   );
@@ -280,6 +282,7 @@ export function createRules(): Screen {
     const change = pending;
     const rules = change ? saved.map((r) => (same(r, change.rule) ? { ...r, ...change.patch } : r)) : saved;
     allOff.hidden = !(view.on && view.mode === "only" && rules.length > 0 && rules.every((r) => r.Off));
+    doh.hidden = !rules.some((r) => r.Kind === "domain" && !r.Off);
     if (rules.length === 0) {
       const empty = view.on && view.mode === "only" ? S.rules.emptyOnly : S.rules.empty;
       list.replaceChildren(h("p", { class: "muted center-text", text: empty }));
@@ -291,5 +294,11 @@ export function createRules(): Screen {
   subscribe("settings", render);
   subscribe("status", render);
   render();
-  return { el, onShow: render };
+  // prefill ставит значение в поле добавления: вкладка «Запросы» переносит сюда имя.
+  function prefill(value: string): void {
+    input.value = value;
+    input.focus();
+  }
+
+  return { el, onShow: render, prefill };
 }

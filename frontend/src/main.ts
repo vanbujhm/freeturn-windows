@@ -7,6 +7,7 @@ import { h, icon, toast } from "./dom";
 import { createHome } from "./screens/home";
 import { createJournal } from "./screens/journal";
 import { createProfiles } from "./screens/profiles";
+import { createQueries } from "./screens/queries";
 import { createRules } from "./screens/rules";
 import { createSettings } from "./screens/settings";
 import type { Status } from "./state";
@@ -23,6 +24,7 @@ const TABS: Tab[] = [
   { id: "home", label: S.tabs.home, paths: ["M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"] },
   { id: "profiles", label: S.tabs.profiles, paths: ["M4 5h16v5H4z", "M4 14h16v5H4z"] },
   { id: "rules", label: S.tabs.rules, paths: ["M4 12h6l4-6h6", "M10 12l4 6h6"] },
+  { id: "queries", label: S.tabs.queries, paths: ["M10 4a6 6 0 1 0 0 12a6 6 0 1 0 0-12", "M20 20l-5.5-5.5"] },
   {
     id: "settings",
     label: S.tabs.settings,
@@ -49,7 +51,17 @@ function goto(tab: TabId): void {
 function mount(root: HTMLElement): void {
   screens.set("home", createHome(goto));
   screens.set("profiles", createProfiles());
-  screens.set("rules", createRules());
+  const rules = createRules();
+  screens.set("rules", rules);
+  screens.set(
+    "queries",
+    createQueries({
+      addRule: (name) => {
+        goto("rules");
+        rules.prefill(name);
+      },
+    }),
+  );
   screens.set("settings", createSettings());
   screens.set("journal", createJournal());
 

@@ -154,7 +154,7 @@ export function reconcileSelection(): void {
   state.selectedId = has(last) ? last : (state.profiles[0]?.ID ?? "");
 }
 
-export type TabId = "home" | "profiles" | "rules" | "settings" | "journal";
+export type TabId = "home" | "profiles" | "rules" | "queries" | "settings" | "journal";
 
 // Screen это вкладка: корневой элемент и действие при показе.
 export interface Screen {
