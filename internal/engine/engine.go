@@ -786,6 +786,15 @@ func (e *Engine) routeListed(s *session) error {
 	}
 	e.mu.Lock()
 	listed := s.listed()
+	if s.proxy != nil {
+		// Сокеты прокси к DNS конфига привязаны к адаптеру, но маршрута по умолчанию в нём нет:
+		// маршрут на сам DNS не даёт им зависеть от того, отправит ли Windows пакет без него.
+		for _, d := range s.cfg.DNS {
+			if p := netip.PrefixFrom(d, d.BitLen()); !slices.Contains(listed, p) {
+				listed = append(listed, p)
+			}
+		}
+	}
 	e.mu.Unlock()
 	return e.d.Net.AddTunnelRoutes(s.luid, listed)
 }
@@ -841,6 +850,9 @@ func (e *Engine) markConnected(s *session) {
 // finish откатывает всё сделанное и выставляет итог сбоя. Итог отмены по команде
 // выставляет Disconnect, ему ещё снимать блокировку.
 func (e *Engine) finish(s *session, err error) {
+	// Сбой подключения не отменял ctx сессии: опоздавшая партия адресов из DNS поставила бы
+	// маршруты после отката. Отменённую сессию повторная отмена не меняет.
+	s.cancel(err)
 	var f *failure
 	isFailure := errors.As(err, &f)
 	s.keepBlock = isFailure && s.holdBlock

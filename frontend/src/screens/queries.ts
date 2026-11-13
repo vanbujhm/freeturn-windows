@@ -47,6 +47,7 @@ export function createQueries(o: { addRule(name: string): void }): Screen {
   let active = false;
   let timer: ReturnType<typeof setInterval> | null = null;
   let inflight = false;
+  let first = true; // первый ответ рисуется всегда
 
   function stop(): void {
     if (timer !== null) {
@@ -67,14 +68,18 @@ export function createQueries(o: { addRule(name: string): void }): Screen {
     }
     if (inflight) return;
     inflight = true;
+    let changed = false;
     try {
       let page = await API.Queries(last);
       // Номер меньше запомненного: служба перезапустилась, её журнал начался заново.
       if (page.Last < last) {
         rows = [];
         last = 0;
+        changed = true;
         page = await API.Queries(0);
       }
+      if ((page.Entries ?? []).length > 0 || page.Active !== active || first) changed = true;
+      first = false;
       take(page.Entries);
       last = page.Last;
       active = page.Active;
@@ -83,7 +88,9 @@ export function createQueries(o: { addRule(name: string): void }): Screen {
     } finally {
       inflight = false;
     }
-    render();
+    // Без новых записей таблица не перестраивается: иначе каждую секунду терялись бы клик по
+    // кнопке строки, выделенный текст и фокус. Фаза подключения меняет только пояснение.
+    if (changed || rows.length === 0) render();
   }
 
   function row(e: QueryEntry): HTMLElement {

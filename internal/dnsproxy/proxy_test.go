@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -584,5 +585,48 @@ func TestProxyCloseDuringQuery(t *testing.T) {
 	case <-done:
 	case <-time.After(ApplyWait):
 		t.Fatal("Close ждал Apply")
+	}
+}
+
+// Закрытое TCP-соединение не оставляет горутин: иначе любой локальный пользователь растил бы
+// память службы, открывая и закрывая соединения.
+func TestProxyTCPConnDoesNotLeak(t *testing.T) {
+	h := startHarness(t, bypassConfig("127.0.0.2", "127.0.0.3", &fakeSink{}), 1)
+	time.Sleep(20 * time.Millisecond)
+	base := runtime.NumGoroutine()
+	for range 30 {
+		c, err := net.Dial("tcp4", h.addr.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Close()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > base+3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := runtime.NumGoroutine(); n > base+3 {
+		t.Fatalf("горутин %d, было %d", n, base)
+	}
+}
+
+// Без DNS в конфиге имя туннельной стороны спрашивается у DNS физического интерфейса без
+// привязки: запрос идёт по таблице маршрутов, как шёл бы без прокси, то есть через туннель.
+func TestProxyFallbackUnbound(t *testing.T) {
+	a := startUpstream(t, "127.0.0.2", 0, answerAll(reply{addrs: []netip.Addr{addrA}}))
+	cfg := bypassConfig("127.0.0.2", "127.0.0.3", &fakeSink{})
+	cfg.Upstreams.Tunnel = nil
+	h := startHarness(t, cfg, a.port())
+
+	h.mustUDP(query(30, "iana.org", dnsmessage.TypeA))
+	if got := h.bound(); len(got) != 0 {
+		t.Fatalf("сокет запасного пути привязан: %v", got)
+	}
+	h.mustUDP(query(31, "www.example.com", dnsmessage.TypeA))
+	if got := h.bound(); !slices.Equal(got, []Side{SideDirect}) {
+		t.Fatalf("имя под правилом без привязки: %v", got)
+	}
+	if a.queries.Load() != 2 {
+		t.Fatalf("запросов к серверу %d", a.queries.Load())
 	}
 }

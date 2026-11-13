@@ -29,11 +29,13 @@ func TestChoose(t *testing.T) {
 		{"только список: имя не под правилом", Config{Domains: domains, TunnelOnly: true, Upstreams: withTunnelDNS}, "iana.org",
 			Choice{Route: SideDirect, Upstream: SideDirect}},
 		{"нет DNS конфига: туннельное имя у физического DNS", Config{Domains: domains, Upstreams: noTunnelDNS}, "iana.org",
-			Choice{Route: SideTunnel, Upstream: SideDirect}},
+			Choice{Route: SideTunnel, Upstream: SideDirect, Unbound: true}},
 		{"нет DNS конфига, только список", Config{Domains: domains, TunnelOnly: true, Upstreams: noTunnelDNS}, "example.com",
-			Choice{Rule: "example.com", Route: SideTunnel, Upstream: SideDirect}},
+			Choice{Rule: "example.com", Route: SideTunnel, Upstream: SideDirect, Unbound: true}},
 		{"нет DNS конфига, раздельное выключено", Config{SplitOff: true, Upstreams: noTunnelDNS}, "iana.org",
-			Choice{Route: SideTunnel, Upstream: SideDirect}},
+			Choice{Route: SideTunnel, Upstream: SideDirect, Unbound: true}},
+		{"нет DNS конфига: имя под правилом обхода привязано", Config{Domains: domains, Upstreams: noTunnelDNS}, "example.com",
+			Choice{Rule: "example.com", Route: SideDirect, Upstream: SideDirect}},
 	}
 	for _, c := range cases {
 		if got := Choose(c.cfg, c.host); got != c.want {

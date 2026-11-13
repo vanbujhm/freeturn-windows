@@ -377,3 +377,31 @@ func TestApplyCtxExpires(t *testing.T) {
 		return slices.Contains(h.net.bypassed(), netip.PrefixFrom(dynamicOne, 32))
 	})
 }
+
+// После неудачного подключения откат снял маршруты. Опоздавшая партия адресов не должна
+// поставить их снова.
+func TestApplyAfterFailedConnect(t *testing.T) {
+	h, p := proxyHarness(t)
+	h.log.failOn("net.routes", errBoom)
+	h.connect(domainRules(testRequest()))
+	h.waitPhase(model.PhaseError)
+	sink := h.sink(p)
+	from := len(h.log.snapshot())
+	if err := sink.Apply(context.Background(), []netip.Addr{dynamicOne}); err == nil {
+		t.Fatal("Apply после сбоя подключения без ошибки")
+	}
+	h.wantSince(from)
+}
+
+// В режиме «только список» у адаптера нет маршрута по умолчанию: DNS конфига получает свой
+// маршрут в туннель, иначе привязанным к адаптеру сокетам прокси некуда идти.
+func TestDNSProxyTunnelOnlyRoutesConfigDNS(t *testing.T) {
+	h, _ := proxyHarness(t)
+	req := domainRules(testRequest())
+	req.Options.SplitMode = model.SplitOnly
+	h.connect(req)
+	h.waitPhase(model.PhaseConnected)
+	if got := h.net.tunnelListed(); !slices.Contains(got, netip.PrefixFrom(configDNS, 32)) {
+		t.Fatalf("маршруты списка %v без DNS конфига", got)
+	}
+}

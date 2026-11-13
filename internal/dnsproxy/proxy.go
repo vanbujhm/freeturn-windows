@@ -187,7 +187,10 @@ func (p *Proxy) serveTCP() {
 
 func (p *Proxy) serveConn(c net.Conn) {
 	defer c.Close()
-	go func() { <-p.ctx.Done(); c.Close() }()
+	// Close прокси обрывает соединение. AfterFunc снимается вместе с соединением, иначе каждое
+	// закрытое соединение держало бы горутину до конца сеанса.
+	stop := context.AfterFunc(p.ctx, func() { c.Close() })
+	defer stop()
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(tcpIdle))
 		raw, err := readTCP(c)
@@ -234,7 +237,7 @@ func (p *Proxy) handle(network string, raw []byte) []byte {
 		Time: began, Name: name, Type: strings.TrimPrefix(q.Type.String(), "Type"),
 		Upstream: string(ch.Upstream), Route: string(ch.Route), Rule: ch.Rule,
 	}
-	resp, err := p.exchange(p.ctx, network, raw, hdr.ID, ch.Upstream, up)
+	resp, err := p.exchange(p.ctx, network, raw, hdr.ID, ch, up)
 	if err != nil {
 		resp = failure(hdr, &q, dnsmessage.RCodeServerFailure)
 		entry.RCode = rcodeText(dnsmessage.RCodeServerFailure)

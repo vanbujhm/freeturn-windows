@@ -82,7 +82,7 @@ func run(ctx context.Context, o runOptions) error {
 	// не пишется.
 	queries := dnsproxy.NewLog()
 	eng := newEngine(paths.core, o.debug, logs, &relay, queries, func() { notify(bypass) })
-	state, err = recoverAfterStart(eng, state, statefile.BootUnix(), netcfg.RemoveRoutes, netcfg.RemoveNRPTKey, save)
+	state, err = recoverAfterStart(eng, state, statefile.BootUnix(), netcfg.RemoveRoutes, netcfg.RemoveAllNRPT, save)
 	if err != nil {
 		logs.write(mobile.LevelError, "состояние после перезапуска не восстановлено: "+err.Error())
 	}
@@ -303,17 +303,23 @@ func restore(r restorer, action statefile.Action, s statefile.State, save func(s
 // живут на физическом адаптере и переживают падение, поэтому снимаются при любом решении и
 // раньше блокировки. Сбой снятия не отменяет блокировку: она важнее. Возвращает состояние, от
 // которого служба работает дальше.
+//
+// Ключи NRPT FreeTurn снимаются при каждом старте, а не по файлу состояния: служба могла упасть
+// между записью ключа и записью файла, а оставленный ключ направляет DNS всей машины на прокси,
+// которого нет. Ключ, который снять не удалось, остаётся в файле.
 func recoverAfterStart(r restorer, s statefile.State, boot int64, remove func([]netcfg.BypassRoute) error,
-	removeNRPT func(string) error, save func(statefile.State) error) (statefile.State, error) {
+	removeNRPT func() error, save func(statefile.State) error) (statefile.State, error) {
 	var errs []error
-	if len(s.Bypass) > 0 || s.NRPT != "" {
+	nrptErr := removeNRPT()
+	errs = append(errs, nrptErr)
+	if len(s.Bypass) > 0 || (s.NRPT != "" && nrptErr == nil) {
 		if len(s.Bypass) > 0 {
 			errs = append(errs, remove(s.Bypass))
 		}
-		if s.NRPT != "" {
-			errs = append(errs, removeNRPT(s.NRPT))
+		if nrptErr == nil {
+			s.NRPT = ""
 		}
-		s.Bypass, s.NRPT = nil, ""
+		s.Bypass = nil
 		errs = append(errs, save(s))
 	}
 	action := statefile.Decide(s, boot)

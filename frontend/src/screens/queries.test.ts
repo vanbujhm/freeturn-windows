@@ -190,3 +190,17 @@ describe("вкладка «Запросы»", () => {
     expect(s.el.querySelector(".queries-empty")!.textContent).toBe(S.queries.empty);
   });
 });
+
+describe("опрос без новых записей", () => {
+  test("тихий такт не перестраивает таблицу", async () => {
+    queries.mockResolvedValueOnce(page([{ Seq: 1, Name: "a.example.com" }], 1));
+    queries.mockResolvedValue(page([], 1));
+    const s = mount();
+    s.onShow?.();
+    await settle();
+    const row = s.el.querySelector(".query");
+    await tick();
+    await tick();
+    expect(s.el.querySelector(".query")).toBe(row);
+  });
+});

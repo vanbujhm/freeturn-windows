@@ -22,8 +22,6 @@ const (
 
 var nrptName = regexp.MustCompile(`^\{FreeTurn-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}$`)
 
-var errForeignNRPT = errors.New("netcfg: ключ NRPT не принадлежит FreeTurn")
-
 var (
 	nrptMu  sync.Mutex
 	nrptKey string // записанный ключ сеанса
@@ -73,6 +71,9 @@ func AddNRPT(server netip.Addr) error {
 		return fmt.Errorf("NRPT: %w", err)
 	}
 	nrptKey = name
+	// В кеше Dnscache лежат ответы, полученные до подключения: без сброса поддомены из него шли
+	// бы мимо прокси, и маршрут для них не встал бы.
+	flushDNSCache()
 	return nil
 }
 
@@ -99,19 +100,7 @@ func AppliedNRPT() string {
 	return nrptKey
 }
 
-// RemoveNRPTKey снимает ключ по имени из файла состояния: служба упала, и правило осталось.
-func RemoveNRPTKey(name string) error {
-	if !ownNRPTKey(name) {
-		return errForeignNRPT
-	}
-	if err := deleteNRPTKey(name); err != nil {
-		return err
-	}
-	flushDNSCache()
-	return nil
-}
-
-// RemoveAllNRPT снимает все ключи FreeTurn. Нужен при удалении программы.
+// RemoveAllNRPT снимает все ключи FreeTurn. Нужен при старте службы и при удалении программы.
 func RemoveAllNRPT() error {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, nrptBase, registry.ENUMERATE_SUB_KEYS)
 	if errors.Is(err, registry.ErrNotExist) {

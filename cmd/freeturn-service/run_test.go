@@ -100,12 +100,12 @@ type recovery struct {
 	saved     []statefile.State
 	removeErr error
 	nrptErr   error
-	nrpt      []string // какие ключи NRPT сняты
+	nrptCalls int // сколько раз сняты ключи NRPT FreeTurn
 }
 
-func (r *recovery) removeNRPT(name string) error {
+func (r *recovery) removeNRPT() error {
 	r.list = append(r.list, "nrpt")
-	r.nrpt = append(r.nrpt, name)
+	r.nrptCalls++
 	return r.nrptErr
 }
 
@@ -130,7 +130,7 @@ func (r *recovery) save(s statefile.State) error {
 	return nil
 }
 
-// Маршруты снимаются при любом решении и раньше блокировки.
+// Ключи NRPT и маршруты снимаются при любом решении и раньше блокировки.
 func TestRecoverRemovesRoutesFirst(t *testing.T) {
 	const boot = 1000
 	tests := []struct {
@@ -139,13 +139,13 @@ func TestRecoverRemovesRoutesFirst(t *testing.T) {
 		boot  int64
 		order []string
 	}{
-		{"туннель не нужен", statefile.State{BootUnix: boot}, boot, []string{"remove", "save"}},
+		{"туннель не нужен", statefile.State{BootUnix: boot}, boot, []string{"nrpt", "remove", "save"}},
 		{"блокировка", statefile.State{Wanted: true, KillSwitch: true, BootUnix: boot}, boot,
-			[]string{"remove", "save", "block"}},
+			[]string{"nrpt", "remove", "save", "block"}},
 		{"ждём профиль", statefile.State{Wanted: true, BootUnix: boot}, boot,
-			[]string{"remove", "save", "await"}},
+			[]string{"nrpt", "remove", "save", "await"}},
 		{"другая загрузка", statefile.State{Wanted: true, BootUnix: boot}, boot + 3600,
-			[]string{"remove", "save", "save"}},
+			[]string{"nrpt", "remove", "save", "save"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -175,7 +175,7 @@ func TestRecoverWithoutRoutesRemovesNothing(t *testing.T) {
 	if _, err := recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(r.list, []string{"await"}) {
+	if !slices.Equal(r.list, []string{"nrpt", "await"}) {
 		t.Fatalf("порядок %v", r.list)
 	}
 }
@@ -189,7 +189,7 @@ func TestRecoverContinuesAfterRemoveError(t *testing.T) {
 	if !errors.Is(err, failure) {
 		t.Fatalf("ошибка %v", err)
 	}
-	if !slices.Equal(r.list, []string{"remove", "save", "block"}) || got.Bypass != nil {
+	if !slices.Equal(r.list, []string{"nrpt", "remove", "save", "block"}) || got.Bypass != nil {
 		t.Fatalf("порядок %v, состояние %+v", r.list, got)
 	}
 }
@@ -409,26 +409,33 @@ func TestEventRelayBeforeServe(t *testing.T) {
 	r.send(ipc.Event{Kind: ipc.KindLog, Log: "строка"})
 }
 
-// Ключ NRPT от упавшей службы снимается при старте: иначе DNS машины ждал бы прокси, которого нет.
-func TestRecoverRemovesSavedNRPT(t *testing.T) {
-	const key = "{FreeTurn-1b4e28ba-2fa1-11d2-883f-0016d3cca427}"
+// Ключи NRPT FreeTurn снимаются при каждом старте, даже если файл состояния о них не знает:
+// служба могла упасть между записью ключа и записью файла. Иначе DNS машины ждал бы прокси,
+// которого нет.
+func TestRecoverAlwaysRemovesNRPT(t *testing.T) {
 	r := &recovery{}
-	s := statefile.State{BootUnix: 1000, NRPT: key}
-	got, err := recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save)
-	if err != nil {
+	if _, err := recoverAfterStart(r, statefile.State{BootUnix: 1000}, 1000, r.remove, r.removeNRPT, r.save); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(r.nrpt, []string{key}) || got.NRPT != "" {
-		t.Fatalf("сняты %v, состояние %+v", r.nrpt, got)
+	if r.nrptCalls != 1 {
+		t.Fatalf("ключи NRPT сняты %d раз", r.nrptCalls)
+	}
+
+	const key = "{FreeTurn-1b4e28ba-2fa1-11d2-883f-0016d3cca427}"
+	r = &recovery{}
+	got, err := recoverAfterStart(r, statefile.State{BootUnix: 1000, NRPT: key}, 1000, r.remove, r.removeNRPT, r.save)
+	if err != nil || r.nrptCalls != 1 || got.NRPT != "" {
+		t.Fatalf("снятие %d, состояние %+v, %v", r.nrptCalls, got, err)
 	}
 	if len(r.saved) == 0 || r.saved[0].NRPT != "" {
 		t.Fatalf("записано %+v", r.saved)
 	}
 
+	// Ключ не снялся: он остаётся в файле, следующий старт попробует снова.
 	failure := errors.New("реестр")
 	r = &recovery{nrptErr: failure}
-	got, err = recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save)
-	if !errors.Is(err, failure) || got.NRPT != "" {
+	got, err = recoverAfterStart(r, statefile.State{BootUnix: 1000, NRPT: key}, 1000, r.remove, r.removeNRPT, r.save)
+	if !errors.Is(err, failure) || got.NRPT != key {
 		t.Fatalf("ошибка %v, состояние %+v", err, got)
 	}
 }

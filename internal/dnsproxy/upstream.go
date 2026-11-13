@@ -39,7 +39,8 @@ func bindSocket(side Side, up Upstreams, fd uintptr) error {
 // exchange пересылает запрос серверам стороны по очереди тем же транспортом, каждому равная
 // доля срока. Ответ без ошибки и NXDOMAIN окончательны. Ошибка: все серверы молчат или
 // ответили ошибкой, программе уходит SERVFAIL.
-func (p *Proxy) exchange(ctx context.Context, network string, raw []byte, id uint16, side Side, up Upstreams) ([]byte, error) {
+func (p *Proxy) exchange(ctx context.Context, network string, raw []byte, id uint16, ch Choice, up Upstreams) ([]byte, error) {
+	side := ch.Upstream
 	servers := up.Direct
 	if side == SideTunnel {
 		servers = up.Tunnel
@@ -50,7 +51,7 @@ func (p *Proxy) exchange(ctx context.Context, network string, raw []byte, id uin
 	share := p.o.timeout / time.Duration(len(servers))
 	for _, server := range servers {
 		try, done := context.WithTimeout(ctx, share)
-		resp, err := p.ask(try, network, netip.AddrPortFrom(server, p.o.port), raw, id, side, up)
+		resp, err := p.ask(try, network, netip.AddrPortFrom(server, p.o.port), raw, id, ch, up)
 		done()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -71,14 +72,17 @@ func (p *Proxy) exchange(ctx context.Context, network string, raw []byte, id uin
 }
 
 // ask спрашивает один сервер. Ответ с чужим ID отбрасывается.
-func (p *Proxy) ask(ctx context.Context, network string, server netip.AddrPort, raw []byte, id uint16, side Side, up Upstreams) ([]byte, error) {
-	d := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
-		var bindErr error
-		if err := c.Control(func(fd uintptr) { bindErr = p.o.bind(side, up, fd) }); err != nil {
-			return err
+func (p *Proxy) ask(ctx context.Context, network string, server netip.AddrPort, raw []byte, id uint16, ch Choice, up Upstreams) ([]byte, error) {
+	var d net.Dialer
+	if !ch.Unbound {
+		d.Control = func(_, _ string, c syscall.RawConn) error {
+			var bindErr error
+			if err := c.Control(func(fd uintptr) { bindErr = p.o.bind(ch.Upstream, up, fd) }); err != nil {
+				return err
+			}
+			return bindErr
 		}
-		return bindErr
-	}}
+	}
 	c, err := d.DialContext(ctx, network, server.String())
 	if err != nil {
 		return nil, err

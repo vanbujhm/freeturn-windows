@@ -239,10 +239,25 @@ func TestNRPTRoundTrip(t *testing.T) {
 		}
 	}()
 
+	// Имя, которое Dnscache уже держит в кеше: после записи ключа оно тоже должно идти в прокси.
+	const cached = "example.com"
+	ctx0, cancel0 := context.WithTimeout(context.Background(), 5*time.Second)
+	before, err := net.DefaultResolver.LookupNetIP(ctx0, "ip4", cached)
+	cancel0()
+	if err != nil || len(before) == 0 {
+		t.Skipf("%s не разрешился до ключа: %v", cached, err)
+	}
+
 	if err := AddNRPT(netip.MustParseAddr("127.0.0.53")); err != nil {
 		t.Fatal(err)
 	}
 	defer RemoveNRPT()
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	fromCache, err := net.DefaultResolver.LookupNetIP(ctx1, "ip4", cached)
+	cancel1()
+	if err != nil || len(fromCache) != 1 || fromCache[0] != answer {
+		t.Fatalf("%s после ключа: %v, %v; кеш не сброшен", cached, fromCache, err)
+	}
 	key := AppliedNRPT()
 	if !strings.HasPrefix(key, nrptPrefix) {
 		t.Fatalf("ключ %q", key)

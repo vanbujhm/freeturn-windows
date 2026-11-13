@@ -47,6 +47,11 @@ type Choice struct {
 	Rule     string
 	Route    Side
 	Upstream Side
+	// Unbound: сокет не привязывается к интерфейсу. Так идёт запасной путь, когда в конфиге
+	// нет DNS: имя туннельной стороны спрашивается у DNS физического интерфейса по таблице
+	// маршрутов, как спрашивала бы система без прокси. С маршрутом по умолчанию через туннель
+	// запрос уходит в туннель, а не открытым текстом мимо него.
+	Unbound bool
 }
 
 // Choose выбирает стороны для имени по режиму и правилам. Имя спрашивается там же, куда пойдёт
@@ -68,6 +73,7 @@ func Choose(c Config, name string) Choice {
 	ch.Upstream = ch.Route
 	if ch.Upstream == SideTunnel && len(c.Upstreams.Tunnel) == 0 {
 		ch.Upstream = SideDirect
+		ch.Unbound = true
 	}
 	return ch
 }

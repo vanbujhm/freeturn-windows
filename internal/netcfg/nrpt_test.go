@@ -29,8 +29,5 @@ func TestRemoveNRPTKeyRejectsForeign(t *testing.T) {
 		if ownNRPTKey(name) {
 			t.Errorf("чужое имя %q принято за своё", name)
 		}
-		if err := RemoveNRPTKey(name); err == nil {
-			t.Errorf("RemoveNRPTKey(%q) без ошибки", name)
-		}
 	}
 }
