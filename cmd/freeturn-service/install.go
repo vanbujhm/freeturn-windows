@@ -190,7 +190,7 @@ func removeData() error {
 	if err != nil {
 		return err
 	}
-	return removeDataIn(base, netcfg.RemoveRoutes)
+	return removeDataIn(base, netcfg.RemoveRoutes, netcfg.RemoveAllNRPT)
 }
 
 // removeDataIn снимает маршруты из файла состояния и удаляет каталог данных в заданном
@@ -198,9 +198,9 @@ func removeData() error {
 // а во время удаления деинсталлятор держит её открытой, и попытка удалить её здесь давала
 // ERROR_SHARING_VIOLATION и срывала удаление. Данным из Program Files верим: подбросить их
 // там некому.
-func removeDataIn(programFiles string, removeRoutes func([]netcfg.BypassRoute) error) error {
+func removeDataIn(programFiles string, removeRoutes func([]netcfg.BypassRoute) error, removeNRPT func() error) error {
 	p := dataPathsFor(programFiles)
-	return errors.Join(removeSavedRoutes(p.state, removeRoutes), os.RemoveAll(p.root))
+	return errors.Join(removeSavedRoutes(p.state, removeRoutes), removeNRPT(), os.RemoveAll(p.root))
 }
 
 // removeSavedRoutes снимает маршруты обхода из файла состояния. Они остаются, только если служба

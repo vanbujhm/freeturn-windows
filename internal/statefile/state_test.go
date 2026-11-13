@@ -189,3 +189,21 @@ func TestBootUnixPlausible(t *testing.T) {
 		t.Errorf("BootUnix нестабилен: %d", d)
 	}
 }
+
+func TestStateNRPTRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	want := State{Wanted: true, BootUnix: boot, NRPT: "{FreeTurn-1b4e28ba-2fa1-11d2-883f-0016d3cca427}"}
+	if err := Save(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil || got.NRPT != want.NRPT {
+		t.Fatalf("Load = %+v, %v", got, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"Wanted":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Load(path); got.NRPT != "" {
+		t.Fatalf("старый файл: NRPT %q", got.NRPT)
+	}
+}

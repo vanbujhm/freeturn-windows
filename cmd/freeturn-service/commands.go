@@ -49,6 +49,7 @@ type commands struct {
 	boot    func() int64
 	logf    func(level, msg string)
 	applied func() []netcfg.BypassRoute
+	nrpt    func() string // ключ NRPT, который сейчас стоит
 
 	mu      sync.Mutex
 	stopped atomic.Bool
@@ -105,15 +106,15 @@ func (c *commands) clearWanted() {
 	c.write()
 }
 
-// syncBypass записывает набор маршрутов обхода, если он изменился.
+// syncBypass записывает набор маршрутов обхода и ключ NRPT, если они изменились.
 func (c *commands) syncBypass() {
 	c.syncMu.Lock()
 	defer c.syncMu.Unlock()
-	routes := c.applied()
+	routes, key := c.applied(), c.nrpt()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	if !slices.Equal(c.state.Bypass, routes) {
-		c.state.Bypass = routes
+	if !slices.Equal(c.state.Bypass, routes) || c.state.NRPT != key {
+		c.state.Bypass, c.state.NRPT = routes, key
 		c.write()
 	}
 }
@@ -125,11 +126,11 @@ func (c *commands) syncBypass() {
 func (c *commands) update(change func(statefile.State) statefile.State) {
 	c.syncMu.Lock()
 	defer c.syncMu.Unlock()
-	routes := c.applied()
+	routes, key := c.applied(), c.nrpt()
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.state = change(c.state)
-	c.state.Bypass = routes
+	c.state.Bypass, c.state.NRPT = routes, key
 	c.write()
 }
 

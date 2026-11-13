@@ -207,7 +207,7 @@ func TestRemoveDataLeavesAppToInstaller(t *testing.T) {
 	}
 	t.Cleanup(func() { windows.CloseHandle(h) })
 
-	if err := removeDataIn(base, noRoutes(t)); err != nil {
+	if err := removeDataIn(base, noRoutes(t), func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(p.root); !errors.Is(err, os.ErrNotExist) {
@@ -229,7 +229,7 @@ func TestRemoveDataKeepsInstalledFiles(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("exe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeDataIn(base, noRoutes(t)); err != nil {
+	if err := removeDataIn(base, noRoutes(t), func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(p.root); !errors.Is(err, os.ErrNotExist) {
@@ -241,7 +241,7 @@ func TestRemoveDataKeepsInstalledFiles(t *testing.T) {
 }
 
 func TestRemoveDataNothingInstalled(t *testing.T) {
-	if err := removeDataIn(t.TempDir(), noRoutes(t)); err != nil {
+	if err := removeDataIn(t.TempDir(), noRoutes(t), func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -276,5 +276,16 @@ func TestWaitStoppedQueryError(t *testing.T) {
 	}, time.Minute, time.Millisecond)
 	if !errors.Is(err, failure) {
 		t.Fatalf("ошибка %v", err)
+	}
+}
+
+// Удаление программы снимает ключи NRPT FreeTurn: служба могла упасть и больше не запуститься.
+func TestRemoveDataRemovesNRPT(t *testing.T) {
+	calls := 0
+	if err := removeDataIn(t.TempDir(), noRoutes(t), func() error { calls++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("ключи NRPT сняты %d раз", calls)
 	}
 }

@@ -99,6 +99,14 @@ type recovery struct {
 	list      []string
 	saved     []statefile.State
 	removeErr error
+	nrptErr   error
+	nrpt      []string // какие ключи NRPT сняты
+}
+
+func (r *recovery) removeNRPT(name string) error {
+	r.list = append(r.list, "nrpt")
+	r.nrpt = append(r.nrpt, name)
+	return r.nrptErr
 }
 
 func (r *recovery) ArmBlock(model.Options) error {
@@ -144,7 +152,7 @@ func TestRecoverRemovesRoutesFirst(t *testing.T) {
 			s := tt.state
 			s.Bypass = testBypass
 			r := &recovery{}
-			got, err := recoverAfterStart(r, s, tt.boot, r.remove, r.save)
+			got, err := recoverAfterStart(r, s, tt.boot, r.remove, r.removeNRPT, r.save)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -164,7 +172,7 @@ func TestRecoverRemovesRoutesFirst(t *testing.T) {
 func TestRecoverWithoutRoutesRemovesNothing(t *testing.T) {
 	r := &recovery{}
 	s := statefile.State{Wanted: true, BootUnix: 1000}
-	if _, err := recoverAfterStart(r, s, 1000, r.remove, r.save); err != nil {
+	if _, err := recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(r.list, []string{"await"}) {
@@ -177,7 +185,7 @@ func TestRecoverContinuesAfterRemoveError(t *testing.T) {
 	failure := errors.New("отказ")
 	r := &recovery{removeErr: failure}
 	s := statefile.State{Wanted: true, KillSwitch: true, BootUnix: 1000, Bypass: testBypass}
-	got, err := recoverAfterStart(r, s, 1000, r.remove, r.save)
+	got, err := recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save)
 	if !errors.Is(err, failure) {
 		t.Fatalf("ошибка %v", err)
 	}
@@ -190,7 +198,7 @@ func TestRecoverContinuesAfterRemoveError(t *testing.T) {
 func TestRecoverOtherBootForgetsWanted(t *testing.T) {
 	r := &recovery{}
 	s := statefile.State{Wanted: true, KillSwitch: true, BootUnix: 1000}
-	got, err := recoverAfterStart(r, s, 5000, r.remove, r.save)
+	got, err := recoverAfterStart(r, s, 5000, r.remove, r.removeNRPT, r.save)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,4 +407,28 @@ func TestWithinWaitsForCall(t *testing.T) {
 func TestEventRelayBeforeServe(t *testing.T) {
 	var r eventRelay
 	r.send(ipc.Event{Kind: ipc.KindLog, Log: "строка"})
+}
+
+// Ключ NRPT от упавшей службы снимается при старте: иначе DNS машины ждал бы прокси, которого нет.
+func TestRecoverRemovesSavedNRPT(t *testing.T) {
+	const key = "{FreeTurn-1b4e28ba-2fa1-11d2-883f-0016d3cca427}"
+	r := &recovery{}
+	s := statefile.State{BootUnix: 1000, NRPT: key}
+	got, err := recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.nrpt, []string{key}) || got.NRPT != "" {
+		t.Fatalf("сняты %v, состояние %+v", r.nrpt, got)
+	}
+	if len(r.saved) == 0 || r.saved[0].NRPT != "" {
+		t.Fatalf("записано %+v", r.saved)
+	}
+
+	failure := errors.New("реестр")
+	r = &recovery{nrptErr: failure}
+	got, err = recoverAfterStart(r, s, 1000, r.remove, r.removeNRPT, r.save)
+	if !errors.Is(err, failure) || got.NRPT != "" {
+		t.Fatalf("ошибка %v, состояние %+v", err, got)
+	}
 }

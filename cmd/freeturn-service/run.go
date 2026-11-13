@@ -78,7 +78,7 @@ func run(ctx context.Context, o runOptions) error {
 
 	bypass := make(chan struct{}, 1)
 	eng := newEngine(paths.core, o.debug, logs, &relay, func() { notify(bypass) })
-	state, err = recoverAfterStart(eng, state, statefile.BootUnix(), netcfg.RemoveRoutes, save)
+	state, err = recoverAfterStart(eng, state, statefile.BootUnix(), netcfg.RemoveRoutes, netcfg.RemoveNRPTKey, save)
 	if err != nil {
 		logs.write(mobile.LevelError, "состояние после перезапуска не восстановлено: "+err.Error())
 	}
@@ -90,6 +90,7 @@ func run(ctx context.Context, o runOptions) error {
 		boot:    statefile.BootUnix,
 		logf:    logs.write,
 		applied: netcfg.AppliedBypass,
+		nrpt:    netcfg.AppliedNRPT,
 		state:   state,
 	}
 	srv, err := ipc.Serve(ipc.PipePath, o.pipeSDDL, cmds)
@@ -294,12 +295,17 @@ func restore(r restorer, action statefile.Action, s statefile.State, save func(s
 // живут на физическом адаптере и переживают падение, поэтому снимаются при любом решении и
 // раньше блокировки. Сбой снятия не отменяет блокировку: она важнее. Возвращает состояние, от
 // которого служба работает дальше.
-func recoverAfterStart(r restorer, s statefile.State, boot int64,
-	remove func([]netcfg.BypassRoute) error, save func(statefile.State) error) (statefile.State, error) {
+func recoverAfterStart(r restorer, s statefile.State, boot int64, remove func([]netcfg.BypassRoute) error,
+	removeNRPT func(string) error, save func(statefile.State) error) (statefile.State, error) {
 	var errs []error
-	if len(s.Bypass) > 0 {
-		errs = append(errs, remove(s.Bypass))
-		s.Bypass = nil
+	if len(s.Bypass) > 0 || s.NRPT != "" {
+		if len(s.Bypass) > 0 {
+			errs = append(errs, remove(s.Bypass))
+		}
+		if s.NRPT != "" {
+			errs = append(errs, removeNRPT(s.NRPT))
+		}
+		s.Bypass, s.NRPT = nil, ""
 		errs = append(errs, save(s))
 	}
 	action := statefile.Decide(s, boot)

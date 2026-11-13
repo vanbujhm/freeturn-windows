@@ -82,6 +82,13 @@ type stateLog struct {
 	saved  []statefile.State
 	err    error
 	routes []netcfg.BypassRoute // набор, который сейчас стоит в системе
+	key    string               // ключ NRPT, который сейчас стоит в системе
+}
+
+func (s *stateLog) nrpt() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.key
 }
 
 func (s *stateLog) save(st statefile.State) error {
@@ -121,6 +128,7 @@ func newCommands(tun *fakeTunnel, st *stateLog, logs *logCatcher) *commands {
 		boot:    func() int64 { return 1000 },
 		logf:    logs.write,
 		applied: st.current,
+		nrpt:    st.nrpt,
 	}
 }
 
@@ -355,5 +363,24 @@ func TestCommandsProbe(t *testing.T) {
 	}
 	if tun.probed != "example.com" || !tun.probeHasDeadline || tun.probeDeadline.After(start.Add(5*time.Second+time.Second)) {
 		t.Fatalf("probed %q, deadline %v (%v)", tun.probed, tun.probeDeadline, tun.probeHasDeadline)
+	}
+}
+
+func TestSyncSavesNRPT(t *testing.T) {
+	st := &stateLog{}
+	c := newCommands(&fakeTunnel{}, st, &logCatcher{})
+	st.mu.Lock()
+	st.key = "{FreeTurn-y}"
+	st.mu.Unlock()
+	c.syncBypass()
+	if got := st.lastSaved(t).NRPT; got != "{FreeTurn-y}" {
+		t.Fatalf("записан ключ %q", got)
+	}
+	st.mu.Lock()
+	st.key = ""
+	st.mu.Unlock()
+	c.syncBypass()
+	if got := st.lastSaved(t).NRPT; got != "" {
+		t.Fatalf("снятый ключ остался: %q", got)
 	}
 }

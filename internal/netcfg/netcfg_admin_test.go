@@ -3,15 +3,22 @@
 package netcfg
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
@@ -191,5 +198,84 @@ func TestBestRoute(t *testing.T) {
 	}
 	if luid != ph.LUID {
 		t.Fatalf("шлюз %s идёт через %d, физический интерфейс %d", ph.Gateway4, luid, ph.LUID)
+	}
+}
+
+// TestNRPTRoundTrip: правило NRPT направляет запросы системы на 127.0.0.53, после снятия
+// ключа запросы туда больше не приходят.
+func TestNRPTRoundTrip(t *testing.T) {
+	lc, err := net.ListenPacket("udp4", "127.0.0.53:53")
+	if err != nil {
+		t.Skipf("127.0.0.53:53 занят: %v", err)
+	}
+	defer lc.Close()
+	answer := netip.MustParseAddr("203.0.113.7")
+	got := make(chan string, 16)
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := lc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			var req dnsmessage.Message
+			if req.Unpack(buf[:n]) != nil || len(req.Questions) != 1 {
+				continue
+			}
+			q := req.Questions[0]
+			got <- strings.TrimSuffix(q.Name.String(), ".")
+			msg := dnsmessage.Message{
+				Header:    dnsmessage.Header{ID: req.ID, Response: true, RecursionAvailable: true},
+				Questions: req.Questions,
+			}
+			if q.Type == dnsmessage.TypeA {
+				msg.Answers = []dnsmessage.Resource{{
+					Header: dnsmessage.ResourceHeader{Name: q.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 1},
+					Body:   &dnsmessage.AResource{A: answer.As4()},
+				}}
+			}
+			b, _ := msg.Pack()
+			_, _ = lc.WriteTo(b, from)
+		}
+	}()
+
+	if err := AddNRPT(netip.MustParseAddr("127.0.0.53")); err != nil {
+		t.Fatal(err)
+	}
+	defer RemoveNRPT()
+	key := AppliedNRPT()
+	if !strings.HasPrefix(key, nrptPrefix) {
+		t.Fatalf("ключ %q", key)
+	}
+	name := fmt.Sprintf("nrpt-%d.example.com", time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", name)
+	cancel()
+	if err != nil || len(addrs) != 1 || addrs[0] != answer {
+		t.Fatalf("через NRPT: %v, %v", addrs, err)
+	}
+
+	if err := RemoveNRPT(); err != nil {
+		t.Fatal(err)
+	}
+	if AppliedNRPT() != "" {
+		t.Fatal("ключ остался запомненным")
+	}
+	if _, err := registry.OpenKey(registry.LOCAL_MACHINE, nrptBase+`\`+key, registry.QUERY_VALUE); !errors.Is(err, registry.ErrNotExist) {
+		t.Fatalf("ключ в реестре остался: %v", err)
+	}
+	for len(got) > 0 {
+		<-got
+	}
+	other := fmt.Sprintf("nrpt-after-%d.example.com", time.Now().UnixNano())
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	_, _ = net.DefaultResolver.LookupNetIP(ctx, "ip4", other)
+	cancel()
+	select {
+	case n := <-got:
+		if n == other {
+			t.Fatalf("после снятия ключа запрос %s пришёл на 127.0.0.53", n)
+		}
+	case <-time.After(500 * time.Millisecond):
 	}
 }

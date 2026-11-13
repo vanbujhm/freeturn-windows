@@ -161,6 +161,13 @@ func ApplyTunnelRoutes(luid uint64, allowed []netip.Prefix, dns []netip.Addr) er
 			return fmt.Errorf("маршруты IPv6: %w", err)
 		}
 	}
+	return SetTunnelDNS(luid, dns)
+}
+
+// SetTunnelDNS задаёт адаптеру туннеля DNS-серверы по семействам. Семейство без серверов не
+// трогается.
+func SetTunnelDNS(luid uint64, dns []netip.Addr) error {
+	l := winipcfg.LUID(luid)
 	for _, fam := range []winipcfg.AddressFamily{windows.AF_INET, windows.AF_INET6} {
 		var servers []netip.Addr
 		for _, d := range dns {
