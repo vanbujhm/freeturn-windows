@@ -1,6 +1,9 @@
 package model
 
-import "net/netip"
+import (
+	"net/netip"
+	"time"
+)
 
 // Via - интерфейс, через который Windows сейчас отправляет пакет на адрес.
 type Via string
@@ -23,4 +26,27 @@ type ProbeHop struct {
 	Local bool
 	// Outside: туннель ведёт весь трафик, кроме списка, но адреса нет в AllowedIPs профиля.
 	Outside bool
+}
+
+// QueryEntry - запись журнала DNS-запросов: что спросила программа, у какой стороны и куда
+// пойдёт трафик адресов. Upstream и Route: "tunnel" или "direct".
+type QueryEntry struct {
+	Seq      uint64
+	Time     time.Time
+	Name     string
+	Type     string // A, AAAA, HTTPS, ...
+	Addrs    []netip.Addr
+	Upstream string
+	Route    string
+	Rule     string // значение сработавшего правила или пусто
+	RCode    string
+	Took     time.Duration
+	Late     bool // ответ ушёл до применения маршрута
+}
+
+// QueryPage - записи журнала после заданного номера. Active: прокси сеанса работает.
+type QueryPage struct {
+	Entries []QueryEntry
+	Last    uint64
+	Active  bool
 }
