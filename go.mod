@@ -1,6 +1,6 @@
 module github.com/vanbujhm/freeturn-windows
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/samosvalishe/free-turn-proxy v0.0.0
@@ -19,7 +19,7 @@ require (
 
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814
-	github.com/andybalholm/brotli v1.2.2 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
 	github.com/bdandy/go-socks4 v1.2.3 // indirect
 	github.com/bogdanfinn/fhttp v0.6.8 // indirect
@@ -29,7 +29,7 @@ require (
 	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
 	github.com/cbeuw/connutil v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/reedsolomon v1.14.2 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
@@ -55,4 +55,4 @@ require (
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 )
 
-replace github.com/samosvalishe/free-turn-proxy => github.com/hackdiaz-dev/free-turn-proxy v0.0.0-20261028173317-562cfb4ba18b
+replace github.com/samosvalishe/free-turn-proxy => github.com/hackdiaz-dev/free-turn-proxy v1.8.1-0.20261112100703-ba695c7a2663
