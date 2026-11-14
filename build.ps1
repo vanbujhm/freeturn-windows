@@ -1,6 +1,6 @@
 ﻿# Собирает интерфейс, FreeTurn.exe, FreeTurnService.exe и установщик.
 #
-#   pwsh -File build.ps1 [-Version 0.10.0] [-UpdateRepo владелец/репозиторий] [-Iscc путь] [-SkipInstaller]
+#   pwsh -File build.ps1 [-Version 0.11.0] [-UpdateRepo владелец/репозиторий] [-Iscc путь] [-SkipInstaller]
 #
 # Без -Version номер берётся из файла VERSION в корне репозитория.
 #
