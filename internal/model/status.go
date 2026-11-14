@@ -60,8 +60,11 @@ type Status struct {
 	TxRate, RxRate, TxTotal, RxTotal int64
 	// CaptchaURL непусто только в PhaseCaptcha.
 	CaptchaURL string
-	ProfileID  string
-	Warnings   []Warning
+	// AutoCaptchaURL - страница автоматической проверки продвинутой капчи. Окно грузит её
+	// в скрытом WebView, человек её не видит, фаза не меняется.
+	AutoCaptchaURL string
+	ProfileID      string
+	Warnings       []Warning
 	// AwaitingProfile: служба перезапустилась и ждёт профиль от окна.
 	AwaitingProfile bool
 }

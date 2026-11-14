@@ -369,8 +369,10 @@ func (e *Engine) OnCoreState(state string, streams, total int, errMsg string) {
 	})
 }
 
-// OnCaptcha принимает страницу капчи. Пустой url закрывает её, а автоматическая проверка
-// (manual=false) окну не показывается.
+// OnCaptcha принимает страницу капчи. Пустой url закрывает её. Автоматическая проверка
+// продвинутой капчи (manual=false) идёт в AutoCaptchaURL: окно грузит страницу в скрытом
+// WebView, чтобы ядро взяло PoW из настоящего браузера. Фазу она не меняет и срок ядра не
+// останавливает.
 func (e *Engine) OnCaptcha(url string, manual bool) {
 	e.update(func(st *model.Status) bool {
 		s := e.sess
@@ -379,16 +381,23 @@ func (e *Engine) OnCaptcha(url string, manual bool) {
 		}
 		switch {
 		case url == "":
+			auto := st.AutoCaptchaURL != ""
+			st.AutoCaptchaURL = ""
 			if st.Phase != model.PhaseCaptcha {
-				return false
+				return auto
 			}
 			st.Phase = s.restingPhase(st.Streams)
 			st.CaptchaURL = ""
 		case manual:
 			st.Phase = model.PhaseCaptcha
 			st.CaptchaURL = url
+			st.AutoCaptchaURL = ""
 		default:
-			return false
+			if st.AutoCaptchaURL == url {
+				return false
+			}
+			st.AutoCaptchaURL = url
+			return true
 		}
 		s.signalCaptcha()
 		return true

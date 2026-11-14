@@ -249,8 +249,38 @@ func TestCaptchaAutoHidden(t *testing.T) {
 	h.connect(testRequest())
 	h.waitCall("core.start")
 	h.e.OnCaptcha(captchaURL, false)
-	if st := h.e.Status(); st.Phase != model.PhaseConnecting || st.CaptchaURL != "" {
+	if st := h.e.Status(); st.Phase != model.PhaseConnecting || st.CaptchaURL != "" || st.AutoCaptchaURL != captchaURL {
 		t.Errorf("статус %+v", st)
+	}
+}
+
+// Автоматическая проверка продвинутой капчи: окно грузит страницу в скрытом WebView, ядро
+// берёт из неё PoW. Пустой адрес снимает страницу, фаза не меняется.
+func TestCaptchaAutoClosed(t *testing.T) {
+	h := newHarness(t)
+	h.connect(testRequest())
+	h.waitPhase(model.PhaseConnected)
+	h.e.OnCaptcha(captchaURL, false)
+	if st := h.e.Status(); st.Phase != model.PhaseConnected || st.AutoCaptchaURL != captchaURL {
+		t.Fatalf("статус %+v", st)
+	}
+	h.e.OnCaptcha("", false)
+	if st := h.e.Status(); st.Phase != model.PhaseConnected || st.AutoCaptchaURL != "" {
+		t.Fatalf("после закрытия %+v", st)
+	}
+}
+
+// Ручная капча после автоматической: адрес автопроверки снимается, страница одна.
+func TestCaptchaManualReplacesAuto(t *testing.T) {
+	h := newHarness(t)
+	h.core.silent = true
+	h.connect(testRequest())
+	h.waitCall("core.start")
+	h.e.OnCaptcha(captchaURL, false)
+	h.e.OnCaptcha(captchaURL+"manual", true)
+	st := h.waitPhase(model.PhaseCaptcha)
+	if st.AutoCaptchaURL != "" || st.CaptchaURL != captchaURL+"manual" {
+		t.Fatalf("статус %+v", st)
 	}
 }
 

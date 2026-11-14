@@ -123,3 +123,67 @@ func TestCaptchaWindowOptions(t *testing.T) {
 		}
 	}
 }
+
+func autoStatus(url string) model.Status {
+	return model.Status{Phase: model.PhaseConnecting, AutoCaptchaURL: url}
+}
+
+func TestDecideAutoCaptcha(t *testing.T) {
+	cases := []struct {
+		name string
+		prev string
+		st   model.Status
+		want captchaAction
+	}{
+		{"нет проверки", "", model.Status{Phase: model.PhaseConnecting}, captchaKeep},
+		{"новая проверка", "", autoStatus(okURL), captchaOpen},
+		{"тот же адрес", okURL, autoStatus(okURL), captchaKeep},
+		{"проверка кончилась", okURL, autoStatus(""), captchaClose},
+		{"служба пропала", okURL, model.Status{}, captchaClose},
+		{"чужой адрес", "", autoStatus("http://evil.example/"), captchaRefuse},
+		{"ручная капча не открывает скрытое окно", "", capStatus(okURL), captchaKeep},
+	}
+	for _, c := range cases {
+		if got := decideAutoCaptcha(c.prev, c.st); got != c.want {
+			t.Errorf("%s: %v, ждали %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Скрытое окно автоматической проверки живёт отдельно от окна ручной капчи.
+func TestCaptchaManagerAuto(t *testing.T) {
+	var ops, logs []string
+	m := &captchaManager{
+		open:      func(u string) { ops = append(ops, "open "+u) },
+		close:     func() { ops = append(ops, "close") },
+		openAuto:  func(u string) { ops = append(ops, "auto "+u) },
+		closeAuto: func() { ops = append(ops, "autoClose") },
+		logf:      func(s string) { logs = append(logs, s) },
+	}
+	m.Update(autoStatus(okURL))
+	m.Update(autoStatus(okURL))
+	m.Update(model.Status{Phase: model.PhaseConnecting})
+	m.Update(autoStatus("http://evil.example/"))
+	m.Update(model.Status{Phase: model.PhaseCaptcha, CaptchaURL: okURL})
+	// Отклонённый адрес запоминается, как у окна ручной капчи: повтор не пишет в журнал, а
+	// следующее состояние без адреса закрывает уже закрытое окно ещё раз, это безвредно.
+	want := []string{"auto " + okURL, "autoClose", "autoClose", "autoClose", "open " + okURL}
+	if !slices.Equal(ops, want) {
+		t.Fatalf("операции %v, ждали %v", ops, want)
+	}
+	if len(logs) != 1 || logs[0] != captchaRefusedLog {
+		t.Fatalf("журнал %v", logs)
+	}
+}
+
+func TestCaptchaAutoWindowOptions(t *testing.T) {
+	o := captchaAutoWindowOptions(okURL)
+	if o.Name != captchaAutoName || o.Name == captchaName || o.Name == "main" || o.URL != okURL || !o.Hidden {
+		t.Fatalf("параметры окна: %+v", o)
+	}
+	if o.Permissions[application.PermissionMicrophone] != application.PermissionDeny ||
+		o.Permissions[application.PermissionClipboardRead] != application.PermissionDeny ||
+		o.Windows.Permissions[application.CoreWebView2PermissionKindUnknownPermission] != application.CoreWebView2PermissionStateDeny {
+		t.Fatalf("разрешения: %+v %+v", o.Permissions, o.Windows.Permissions)
+	}
+}

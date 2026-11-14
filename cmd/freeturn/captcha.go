@@ -13,6 +13,8 @@ import (
 )
 
 const (
+	// captchaAutoName - скрытое окно автоматической проверки продвинутой капчи.
+	captchaAutoName                   = "captcha-auto"
 	captchaName                       = "captcha"
 	captchaTitle                      = "Проверка VK"
 	captchaWidth, captchaHeight       = 480, 720
@@ -64,6 +66,16 @@ func decideCaptcha(prev string, st model.Status) captchaAction {
 	if st.Phase == model.PhaseCaptcha {
 		want = st.CaptchaURL
 	}
+	return decideURL(prev, want)
+}
+
+// decideAutoCaptcha решает то же для скрытого окна автоматической проверки: оно нужно, пока
+// служба сообщает AutoCaptchaURL.
+func decideAutoCaptcha(prev string, st model.Status) captchaAction {
+	return decideURL(prev, st.AutoCaptchaURL)
+}
+
+func decideURL(prev, want string) captchaAction {
 	switch {
 	case want == prev:
 		return captchaKeep
@@ -81,16 +93,22 @@ func decideCaptcha(prev string, st model.Status) captchaAction {
 type captchaManager struct {
 	open  func(url string)
 	close func()
-	logf  func(string)
+	// openAuto и closeAuto ведут скрытое окно автоматической проверки продвинутой капчи:
+	// ядро берёт PoW из страницы, загруженной в настоящем браузере, человеку она не нужна.
+	openAuto  func(url string)
+	closeAuto func()
+	logf      func(string)
 
-	mu   sync.Mutex
-	last string // адрес, по которому приняли решение в прошлый раз
+	mu       sync.Mutex
+	last     string // адрес, по которому приняли решение в прошлый раз
+	lastAuto string // то же для скрытого окна
 }
 
 // Update вызывается при каждом состоянии службы и при обрыве канала (пустое состояние).
 func (m *captchaManager) Update(st model.Status) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateAuto(st)
 	act := decideCaptcha(m.last, st)
 	if act == captchaKeep {
 		return
@@ -106,6 +124,27 @@ func (m *captchaManager) Update(st model.Status) {
 		m.close()
 	case captchaRefuse:
 		m.close()
+		m.logf(captchaRefusedLog)
+	}
+}
+
+// updateAuto ведёт скрытое окно. Вызывается под mu.
+func (m *captchaManager) updateAuto(st model.Status) {
+	if m.openAuto == nil || m.closeAuto == nil {
+		return
+	}
+	act := decideAutoCaptcha(m.lastAuto, st)
+	if act == captchaKeep {
+		return
+	}
+	m.lastAuto = st.AutoCaptchaURL
+	switch act {
+	case captchaOpen:
+		m.openAuto(st.AutoCaptchaURL)
+	case captchaClose:
+		m.closeAuto()
+	case captchaRefuse:
+		m.closeAuto()
 		m.logf(captchaRefusedLog)
 	}
 }
@@ -139,11 +178,20 @@ func captchaWindowOptions(u string) application.WebviewWindowOptions {
 	}
 }
 
+// captchaAutoWindowOptions - скрытое окно автоматической проверки. Разрешения те же, что у
+// окна капчи: страница та же чужая.
+func captchaAutoWindowOptions(u string) application.WebviewWindowOptions {
+	o := captchaWindowOptions(u)
+	o.Name = captchaAutoName
+	o.Hidden = true
+	return o
+}
+
 // newCaptchaManager связывает менеджер с окнами Wails. Операции с окнами идут через
 // главный поток, как требует Wails, и ставятся в очередь, не блокируя вызывающего: Update
 // зовут из потока выдачи событий. Указатель на окно трогает только главный поток.
 func newCaptchaManager(app *application.App, logf func(string)) *captchaManager {
-	var win *application.WebviewWindow
+	var win, auto *application.WebviewWindow
 	return &captchaManager{
 		logf: logf,
 		open: func(u string) {
@@ -175,6 +223,23 @@ func newCaptchaManager(app *application.App, logf func(string)) *captchaManager 
 			application.InvokeAsync(func() {
 				if w := win; w != nil {
 					win = nil
+					w.Close()
+				}
+			})
+		},
+		openAuto: func(u string) {
+			application.InvokeAsync(func() {
+				if auto != nil {
+					auto.SetURL(u)
+					return
+				}
+				auto = app.Window.NewWithOptions(captchaAutoWindowOptions(u))
+			})
+		},
+		closeAuto: func() {
+			application.InvokeAsync(func() {
+				if w := auto; w != nil {
+					auto = nil
 					w.Close()
 				}
 			})
