@@ -55,4 +55,4 @@ require (
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 )
 
-replace github.com/samosvalishe/free-turn-proxy => github.com/hackdiaz-dev/free-turn-proxy v1.8.1-0.20261112100703-ba695c7a2663
+replace github.com/samosvalishe/free-turn-proxy => github.com/hackdiaz-dev/free-turn-proxy v1.8.1-0.20261113212251-f6b1f2576775
